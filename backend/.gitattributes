@@ -1,0 +1,18 @@
+# 自动检测文本文件，统一用 LF（Python/前端/配置文件行业标准）
+* text=auto eol=lf
+
+# 明确标记纯文本文件
+*.py text
+*.toml text
+*.yaml text
+*.yml text
+*.json text
+*.md text
+*.txt text
+*.gitignore text
+
+# 二进制文件绝对不要转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.lock binary

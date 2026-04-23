@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 环境变量文件（敏感信息）
+.env
+.env.*
+# !表示不忽略 .env.example 和 .env.template 文件
+!.env.example
+!.env.template
+
+# 明确忽略本地开发特定环境文件
+.env.development.local
+.env.local
+
+# 测试文件
+tests/
+pytest_cache/

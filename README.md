@@ -196,13 +196,10 @@ My-Project/
 
 - `POST /api/v1/auth/register` - 用户注册
 - `POST /api/v1/auth/login` - 用户登录
-
-### 聊天机器人
-
-- `POST /api/v1/chatbot/chat` - 常规聊天
-- `POST /api/v1/chatbot/chat/stream` - 流式聊天（SSE）
-- `GET /api/v1/chatbot/messages` - 获取历史消息
-- `DELETE /api/v1/chatbot/messages` - 清空历史
+- `POST /api/v1/auth/session` - 创建新会话
+- `PATCH /api/v1/auth/session/{session_id}/name` - 设置会话名称
+- `DELETE /api/v1/auth/session/{session_id}` - 删除会话
+- `GET /api/v1/auth/sessions` - 获取所有会话
 
 ### 旅游规划
 

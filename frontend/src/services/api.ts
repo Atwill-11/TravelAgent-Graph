@@ -14,7 +14,7 @@ const API_BASE_URL =
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000,
+  timeout: 300000,  // 5 分钟超时，用于支持复杂的旅行计划生成
   headers: {
     "Content-Type": "application/json",
   },

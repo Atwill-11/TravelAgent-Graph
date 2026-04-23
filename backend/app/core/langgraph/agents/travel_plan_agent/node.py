@@ -119,7 +119,7 @@ def get_plan_model():
         api_base=DASHSCOPE_API_BASE,
         temperature=0.7,
         max_tokens=1000,
-        timeout=60,
+        timeout=180,  # 增加到 3 分钟，支持复杂的旅行计划生成
         max_retries=2,
     )
 
@@ -132,7 +132,7 @@ def get_summary_model():
         api_base=DASHSCOPE_API_BASE,
         temperature=0.7,
         max_tokens=1500,
-        timeout=60,
+        timeout=180,  # 增加到 3 分钟，支持复杂的总结生成
         max_retries=2,
     )
 

@@ -133,33 +133,51 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
 ## 📁 项目结构
 
 ```
-My-Project-Core/
-├── app/
-│   ├── api/v1/              # API 路由层
-│   │   ├── auth.py          # 认证授权（JWT）
-│   │   ├── chatbot.py       # 聊天机器人端点
-│   │   └── travel.py        # 旅游规划端点
-│   ├── core/
-│   │   ├── langgraph/       # LangGraph Agent 核心
-│   │   │   ├── agents/      # 子 Agent 定义
-│   │   │   │   ├── sub_agents/  # 景点/酒店/天气子 Agent
-│   │   │   │   └── travel_plan_agent/  # 主规划 Agent
-│   │   │   ├── tools/       # 工具定义
-│   │   │   │   ├── local/   # 本地工具（和风天气）
-│   │   │   │   └── mcp/     # MCP 工具（高德地图）
-│   │   │   └── graph.py     # Agent 主图
-│   │   ├── config.py        # 配置管理
-│   │   ├── logging.py       # 结构化日志
-│   │   └── middleware.py    # 中间件
-│   ├── models/              # 数据库模型（SQLModel）
-│   ├── schemas/             # Pydantic 数据模型
-│   ├── services/            # 服务层
-│   │   ├── llm.py           # LLM 服务（多模型降级）
-│   │   └── database.py      # 数据库服务
-│   └── utils/               # 工具函数
-├── tests/                   # 测试用例
-├── pyproject.toml           # 项目依赖
-└── .env.example             # 环境变量示例
+My-Project/
+├── backend/                   # 后端项目（Python + FastAPI）
+│   ├── app/
+│   │   ├── api/v1/            # API 路由层
+│   │   │   ├── auth.py        # 认证授权（JWT）
+│   │   │   ├── chatbot.py     # 聊天机器人端点
+│   │   │   └── travel.py      # 旅游规划端点
+│   │   ├── core/              # 核心模块
+│   │   │   ├── langgraph/     # LangGraph Agent 核心
+│   │   │   │   ├── agents/    # 子 Agent 定义
+│   │   │   │   │   ├── sub_agents/         # 景点/酒店/天气子 Agent
+│   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent
+│   │   │   │   ├── tools/     # 工具定义
+│   │   │   │   │   ├── local/  # 本地工具（和风天气）
+│   │   │   │   │   └── mcp/    # MCP 工具（高德地图）
+│   │   │   │   └── graph.py   # Agent 主图
+│   │   │   ├── config.py      # 配置管理
+│   │   │   ├── logging.py     # 结构化日志
+│   │   │   └── middleware.py  # 中间件
+│   │   ├── models/            # 数据库模型（SQLModel）
+│   │   ├── schemas/           # Pydantic 数据模型
+│   │   ├── services/          # 服务层
+│   │   │   ├── llm.py         # LLM 服务（多模型降级）
+│   │   │   └── database.py    # 数据库服务
+│   │   └── utils/             # 工具函数
+│   ├── pyproject.toml         # 项目依赖
+│   ├── uv.lock                # 锁定依赖版本
+│   └── .env.example           # 环境变量示例
+│
+├── frontend/                  # 前端项目（Vue 3 + TypeScript + Vite）
+│   ├── src/
+│   │   ├── components/        # 可复用组件
+│   │   ├── views/             # 页面视图
+│   │   ├── router/            # 路由配置
+│   │   ├── services/          # API 服务
+│   │   ├── types/             # TypeScript 类型定义
+│   │   ├── App.vue            # 根组件
+│   │   └── main.ts            # 入口文件
+│   ├── public/                # 静态资源
+│   ├── package.json           # 前端依赖
+│   ├── tsconfig.json          # TypeScript 配置
+│   ├── vite.config.ts         # Vite 配置
+│   └── .env.example           # 环境变量示例
+│
+└── README.md                  # 项目文档
 ```
 
 ---
@@ -171,49 +189,6 @@ My-Project-Core/
 - Python 3.11+
 - PostgreSQL 14+
 - uv（包管理器）
-
-### 安装步骤
-
-1. **克隆项目**
-
-```bash
-git clone https://github.com/your-username/TravelAgent-Graph-Pro.git
-cd TravelAgent-Graph-Pro/My-Project-Core
-```
-
-2. **安装依赖**
-
-```bash
-uv sync
-```
-
-3. **配置环境变量**
-
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填写必要的 API Key 和数据库配置
-```
-
-4. **初始化数据库**
-
-```bash
-# 创建 PostgreSQL 数据库
-createdb travel_agent
-```
-
-5. **启动服务**
-
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-6. **访问 API 文档**
-
-```
-http://localhost:8000/docs
-```
-
----
 
 ## 📡 API 接口
 

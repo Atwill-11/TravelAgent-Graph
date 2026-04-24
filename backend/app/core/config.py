@@ -140,7 +140,10 @@ class Settings:
         # qwen的LLM模型配置
         self.DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
         self.DASHSCOPE_API_BASE = os.getenv("DASHSCOPE_API_BASE", "")
-        self.DASHSCOPE_DEFAULT_LLM_MODEL = os.getenv("DASHSCOPE_DEFAULT_LLM_MODEL", "qwen3.5-flash")
+        self.DASHSCOPE_DEFAULT_LLM_MODEL = os.getenv("DASHSCOPE_DEFAULT_LLM_MODEL", "")
+        self.DASHSCOPE_SUMMARY_LLM_MODEL = os.getenv("DASHSCOPE_SUMMARY_LLM_MODEL") or self.DASHSCOPE_DEFAULT_LLM_MODEL
+        self.DASHSCOPE_PLAN_LLM_MODEL = os.getenv("DASHSCOPE_PLAN_LLM_MODEL") or self.DASHSCOPE_DEFAULT_LLM_MODEL
+        self.DASHSCOPE_SUBAGENT_LLM_MODEL = os.getenv("DASHSCOPE_SUBAGENT_LLM_MODEL") or self.DASHSCOPE_DEFAULT_LLM_MODEL
         # LLM通用模型配置
         self.DEFAULT_LLM_TEMPERATURE = float(os.getenv("DEFAULT_LLM_TEMPERATURE", "0.2"))
         self.MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2000"))

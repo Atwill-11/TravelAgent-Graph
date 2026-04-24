@@ -12,14 +12,11 @@ from fastapi import APIRouter
 from app.core.config import settings
 from app.core.logging import logger
 from app.api.v1.auth import router as auth_router
-from app.api.v1.chatbot import router as chatbot_router
 from app.api.v1.travel import router as travel_router
 
 api_router = APIRouter()
 # 挂载auth路由
 api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
-# 挂载chatbot路由
-api_router.include_router(chatbot_router, prefix="/chatbot", tags=["chatbot"])
 # 挂载travel路由
 api_router.include_router(travel_router, prefix="/trip", tags=["旅游计划"])
 

@@ -7,116 +7,38 @@
 - should_continue: 路由判断函数
 """
 
+import math
+from datetime import datetime, timedelta
 from typing import Literal
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from langchain_qwq import ChatQwen
 
 from app.core.config import settings
+from app.core.logging import logger
 from app.core.langgraph.agents.sub_agents import (
     call_attraction_sub_agent,
     call_hotel_sub_agent,
     call_weather_sub_agent,
 )
-from app.schemas.agent import (
+from app.schemas import (
     TravelPlannerState,
     TaskItem,
     SubAgentResult,
+    TravelWeatherData,
+    TripPlan,
+    PlanResult,
+    DayPlan
 )
-from app.schemas.travel import TripPlan
-from app.schemas.weather import TravelWeatherData
 
-
-# ========== Prompt 定义 ==========
-
-PLAN_MODEL_PROMPT = """
-你是一个智能旅游规划助手，负责分析用户需求并拆分为具体的子任务。
-
-**可用子智能体:**
-- weather: 天气查询专家，可查询指定城市的天气信息
-- attraction: 景点搜索专家，可根据城市和偏好搜索景点
-- hotel: 酒店推荐专家，可根据城市推荐合适的酒店
-
-**重要说明：**
-- 只生成需要调用子智能体的任务（weather、attraction、hotel）
-- 不要生成"整合"、"总结"、"制定行程"等类型的任务
-- 整合工作由系统自动完成，无需单独规划任务
-
-**任务拆分原则:**
-1. 每个任务应该明确、可执行
-2. 任务之间应该有合理的依赖顺序
-3. 每个任务应该能由对应的子智能体完成
-4. 任务数量控制在2-3个（仅包含需要调用子智能体的任务）
-
-**输出格式:**
-返回 JSON 格式，包含:
-- reasoning: 规划思路
-- plan: 任务计划
-  - tasks: 任务列表
-  - task_types: 每个任务对应的子智能体类型（只能是 weather/attraction/hotel）
-"""
-
-
-SUMMARY_PROMPT = """
-你是一个专业的旅游规划总结助手。
-
-**重要说明：**
-景点和酒店已经根据评分和距离智能分配完成，你只需要根据分配结果生成友好的文本描述。
-
-**你的核心任务：**
-根据已分配的景点和酒店，生成完整、实用的旅游规划文本描述。
-
-**工作流程：**
-1. **阅读分配结果**：仔细查看已分配的景点和酒店信息
-2. **生成描述**：
-   - 为每天生成详细的行程描述
-   - 包含景点名称、地址、评分、门票价格等关键信息
-   - 提供交通和餐饮建议
-   - 添加实用的旅游提示
-
-**注意事项：**
-- 必须严格按照分配结果生成描述，不要修改已分配的景点和酒店
-- 可以添加行程亮点、注意事项、交通建议等补充信息
-- 确保描述生动、实用、易于理解
-
-**输出要求：**
-1. 结构清晰，使用标题和列表组织内容
-2. 信息完整，包含所有关键信息
-3. 实用性强，提供具体建议
-4. 语言简洁，避免冗余
-
-**输出格式：**
-## 📋 旅游规划概览
-[整体概述]
-
-## 🌤️ 天气信息
-[天气相关内容，要求从保留子智能体得到的具体数据]
-
-## 🏛️ 景点推荐
-[根据分配结果生成详细的景点描述]
-
-## 🏨 住宿建议
-[根据分配结果生成酒店描述]
-
-## 💡 温馨提示
-[其他建议]
-"""
-
-
-# ========== 模型初始化 ==========
-
-DASHSCOPE_API_KEY = settings.DASHSCOPE_API_KEY
-DASHSCOPE_API_BASE = settings.DASHSCOPE_API_BASE
-
-from langchain_qwq import ChatQwen
-
+from app.core.prompts import PLAN_MODEL_PROMPT, SUMMARY_PROMPT
 
 def get_plan_model():
     """获取规划模型"""
     return ChatQwen(
         model_name="qwen3.5-flash-2026-02-23",
-        api_key=DASHSCOPE_API_KEY,
-        api_base=DASHSCOPE_API_BASE,
+        api_key=settings.DASHSCOPE_API_KEY,
+        api_base=settings.DASHSCOPE_API_BASE,
         temperature=0.7,
         max_tokens=1000,
         timeout=180,  # 增加到 3 分钟，支持复杂的旅行计划生成
@@ -128,28 +50,13 @@ def get_summary_model():
     """获取总结模型"""
     return ChatQwen(
         model_name="qwen3.5-flash-2026-02-23",
-        api_key=DASHSCOPE_API_KEY,
-        api_base=DASHSCOPE_API_BASE,
+        api_key=settings.DASHSCOPE_API_KEY,
+        api_base=settings.DASHSCOPE_API_BASE,
         temperature=0.7,
         max_tokens=1500,
         timeout=180,  # 增加到 3 分钟，支持复杂的总结生成
         max_retries=2,
     )
-
-
-# ========== Schema 定义 ==========
-
-class TaskPlan(BaseModel):
-    """任务规划结构"""
-    tasks: list[str] = Field(description="任务列表，按执行顺序排列")
-    task_types: list[str] = Field(description="每个任务对应的子智能体类型: weather/attraction/hotel")
-
-
-class PlanResult(BaseModel):
-    """规划结果"""
-    reasoning: str = Field(description="规划思路")
-    plan: TaskPlan = Field(description="任务计划")
-
 
 # ========== 子智能体路由映射 ==========
 
@@ -158,7 +65,6 @@ SUB_AGENT_MAP = {
     "attraction": call_attraction_sub_agent,
     "hotel": call_hotel_sub_agent,
 }
-
 
 # ========== 节点函数 ==========
 
@@ -169,7 +75,6 @@ def plan_node(state: TravelPlannerState) -> dict:
     """
     model = get_plan_model()
     
-    trip_request = state.trip_request
     user_message = state.messages[-1].content if state.messages else ""
     
     plan_prompt = ChatPromptTemplate.from_messages([
@@ -220,7 +125,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
         plan[current_task_idx].status = "completed"
         plan[current_task_idx].result = f"跳过：'{task_type}' 不是有效的子智能体类型"
         
-        print(f"警告：跳过未知任务类型 '{task_type}' - {task_name}")
+        logger.warning(f"警告：跳过未知任务类型 '{task_type}' - {task_name}")
         
         return {
             "plan": plan,
@@ -275,7 +180,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                     )
                 update["trip_plan"] = trip_plan
             except Exception as e:
-                print(f"解析天气结构化数据失败: {e}")
+                logger.error(f"解析天气结构化数据失败: {e}")
 
         if task_type == "attraction" and structured_data:
             try:
@@ -288,9 +193,9 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                         elif isinstance(item, dict):
                             attractions.append(Attraction(**item))
                     update["attraction_pool"] = state.attraction_pool + attractions
-                    print(f"已将 {len(attractions)} 个景点添加到景点池")
+                    logger.info(f"已将 {len(attractions)} 个景点添加到景点池")
             except Exception as e:
-                print(f"解析景点结构化数据失败: {e}")
+                logger.error(f"解析景点结构化数据失败: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -305,9 +210,9 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                         elif isinstance(item, dict):
                             hotels.append(Hotel(**item))
                     update["hotel_pool"] = state.hotel_pool + hotels
-                    print(f"已将 {len(hotels)} 个酒店添加到酒店池")
+                    logger.info(f"已将 {len(hotels)} 个酒店添加到酒店池")
             except Exception as e:
-                print(f"解析酒店结构化数据失败: {e}")
+                logger.error(f"解析酒店结构化数据失败: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -328,9 +233,6 @@ def summarize_node(state: TravelPlannerState) -> dict:
     总结节点。
     汇总所有子任务结果，生成最终旅游规划。
     """
-    from app.schemas.travel import TripPlan, DayPlan, Budget
-    from datetime import datetime, timedelta
-    import math
     
     model = get_summary_model()
     
@@ -401,11 +303,11 @@ def summarize_node(state: TravelPlannerState) -> dict:
                 days.append(day_plan)
             
             if sorted_attractions:
-                print(f"已将 {len(sorted_attractions)} 个景点分配到 {travel_days} 天的行程中")
+                logger.info(f"已将 {len(sorted_attractions)} 个景点分配到 {travel_days} 天的行程中")
             if selected_hotel:
-                print(f"已选择酒店: {selected_hotel.name} (评分: {selected_hotel.rating})")
+                logger.info(f"已选择酒店: {selected_hotel.name} (评分: {selected_hotel.rating})")
         except Exception as e:
-            print(f"分配景点和酒店到各天失败: {e}")
+            logger.error(f"分配景点和酒店到各天失败: {e}")
             import traceback
             traceback.print_exc()
     

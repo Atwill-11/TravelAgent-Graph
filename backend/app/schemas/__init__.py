@@ -1,11 +1,11 @@
 """API数据传输对象层（DTO）"""
 
-from app.schemas.auth import Token
-from app.schemas.chat import (
-    ChatRequest,
-    ChatResponse,
-    Message,
-    StreamResponse,
+from app.schemas.auth import (
+    Token,
+    SessionResponse,
+    TokenResponse,
+    UserCreate,
+    UserResponse,
 )
 from app.schemas.common import Location
 from app.schemas.agent import (
@@ -28,6 +28,8 @@ from app.schemas.travel import (
     DayPlan,
     TripPlan,
     TripPlanResponse,
+    PlanResult,
+    TaskPlan,
 )
 from app.schemas.weather import (
     LocationInfo,
@@ -40,10 +42,10 @@ from app.schemas.weather import (
 
 __all__ = [
     "Token",
-    "ChatRequest",
-    "ChatResponse",
-    "Message",
-    "StreamResponse",
+    "SessionResponse",
+    "TokenResponse",
+    "UserCreate",
+    "UserResponse",
     "Location",
     "AgentContext",
     "TravelContext",
@@ -62,6 +64,8 @@ __all__ = [
     "DayPlan",
     "TripPlan",
     "TripPlanResponse",
+    "PlanResult",
+    "TaskPlan",
     "LocationInfo",
     "QWeatherInfo",
     "AirQualityInfo",

@@ -6,7 +6,6 @@
 - 提供语义搜索功能，检索相关历史规划
 """
 
-import os
 import time
 import hashlib
 from typing import Optional

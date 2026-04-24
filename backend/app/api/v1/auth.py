@@ -26,7 +26,7 @@ from app.core.logging import (
 )
 from app.models.session import Session
 from app.models.user import User
-from app.schemas.auth import (
+from app.schemas import (
     SessionResponse,
     TokenResponse,
     UserCreate,
@@ -128,21 +128,6 @@ async def get_current_session(
 
         # 对 session_id 进行清洗处理
         session_id = sanitize_string(session_id)
-
-        # # 验证 session_id 是否为有效的 UUID 格式
-        # # 会话 ID 应该是 UUID 格式，而不是用户 ID（整数）
-        # try:
-        #     uuid.UUID(session_id)
-        # except ValueError:
-        #     logger.error(
-        #         "invalid_session_id_format（会话 ID 格式无效：期望 UUID 格式，可能是使用了用户 token 而非会话 token）",
-        #         session_id=session_id,
-        #     )
-        #     raise HTTPException(
-        #         status_code=401,
-        #         detail="Invalid session token. Please use session token instead of user token（无效的会话令牌，请使用会话令牌而非用户令牌）",
-        #         headers={"WWW-Authenticate": "Bearer"},
-        #     )
 
         # 验证会话在数据库中是否存在
         session = await db_service.get_session(session_id)

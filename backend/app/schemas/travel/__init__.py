@@ -1,6 +1,6 @@
 from .request import TripRequest, POISearchRequest, RouteRequest
 from .components import Attraction, Meal, Hotel, Budget, DayPlan
-from .plan import TripPlan, TripPlanResponse
+from .plan import TripPlan, TripPlanResponse, PlanResult, TaskPlan
 
 __all__ = [
     "TripRequest",
@@ -13,4 +13,6 @@ __all__ = [
     "DayPlan",
     "TripPlan",
     "TripPlanResponse",
+    "PlanResult",
+    "TaskPlan",
 ]

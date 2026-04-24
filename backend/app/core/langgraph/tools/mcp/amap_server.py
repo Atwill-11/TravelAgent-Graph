@@ -9,8 +9,12 @@ import re
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from app.core.config import settings
-from app.schemas.common import Location
-from app.schemas.weather import POIInfo, AmapWeatherInfo
+from app.core.logging import logger
+from app.schemas import (
+    Location,
+    POIInfo, 
+    AmapWeatherInfo
+)
 
 
 # ========== 轻量 Tool 容器（用于按名称查 & 调用） ==========
@@ -122,12 +126,12 @@ def _get_client_and_tools() -> tuple[MultiServerMCPClient, MCPToolSet]:
 
     _amap_tools = MCPToolSet(tools)
 
-    print("✅ 高德地图MCP客户端初始化成功（基于 MultiServerMCPClient）")
-    print(f"  工具数量: {len(_amap_tools.list_names())}")
+    logger.info("✅ 高德地图MCP客户端初始化成功（基于 MultiServerMCPClient）")
+    logger.info(f"  工具数量: {len(_amap_tools.list_names())}")
     if _amap_tools.list_names():
-        print("  可用工具:")
+        logger.info("  可用工具:")
         for name in _amap_tools.list_names():
-            print(f"  - {name}")
+            logger.info(f"  - {name}")
 
     _amap_mcp_client = client
     return _amap_mcp_client, _amap_tools
@@ -164,161 +168,6 @@ class AmapService:
         """首次调用时完成初始化"""
         if self._client is None or self._tools is None:
             self._client, self._tools = _get_client_and_tools()
-
-    # ------ POI 搜索 ------
-
-    def search_poi(
-        self,
-        keywords: str,
-        city: str,
-        citylimit: bool = True,
-    ) -> List["POIInfo"]:
-        """
-        搜索POI。
-        映射关系：调用 MCP 工具 maps_text_search（与你原来保持一致）。
-        """
-        self._ensure()
-        tool_name = "maps_text_search"
-        t = self._tools.get(tool_name)
-        if t is None:
-            print(f"❌ 未找到工具: {tool_name}，可用工具: {self._tools.list_names()}")
-            return []
-
-        try:
-            result = _run_sync(
-                t.ainvoke({
-                    "keywords": keywords,
-                    "city": city,
-                    "citylimit": str(citylimit).lower(),
-                })
-            )
-            # TODO: 按 amap-mcp-server 的实际返回格式做解析
-            # 伪代码示意：
-            # data = json.loads(result) if isinstance(result, str) else result
-            # pois = data.get("pois", [])
-            # return [POIInfo(**p) for p in pois]
-            print(f"POI搜索结果: {str(result)[:200]}...")
-            return []
-        except Exception as e:
-            print(f"❌ POI搜索失败: {str(e)}")
-            return []
-
-    # ------ 天气查询 ------
-
-    def get_weather(self, city: str) -> List["AmapWeatherInfo"]:
-        """查询天气。调用 MCP 工具 maps_weather。"""
-        self._ensure()
-        tool_name = "maps_weather"
-        t = self._tools.get(tool_name)
-        if t is None:
-            print(f"❌ 未找到工具: {tool_name}")
-            return []
-
-        try:
-            result = _run_sync(t.ainvoke({"city": city}))
-            print(f"天气查询结果: {str(result)[:200]}...")
-            # TODO: 解析并映射为 AmapWeatherInfo 列表
-            return []
-        except Exception as e:
-            print(f"❌ 天气查询失败: {str(e)}")
-            return []
-
-    # ------ 路线规划 ------
-
-    def plan_route(
-        self,
-        origin_address: str,
-        destination_address: str,
-        origin_city: Optional[str] = None,
-        destination_city: Optional[str] = None,
-        route_type: str = "walking",
-    ) -> Dict[str, Any]:
-        """
-        路线规划。
-        - walking -> maps_direction_walking_by_address
-        - driving -> maps_direction_driving_by_address
-        - transit -> maps_direction_transit_integrated_by_address
-        """
-        self._ensure()
-        tool_map = {
-            "walking": "maps_direction_walking_by_address",
-            "driving": "maps_direction_driving_by_address",
-            "transit": "maps_direction_transit_integrated_by_address",
-        }
-        tool_name = tool_map.get(route_type, "maps_direction_walking_by_address")
-        t = self._tools.get(tool_name)
-        if t is None:
-            print(f"❌ 未找到工具: {tool_name}")
-            return {}
-
-        try:
-            arguments: Dict[str, Any] = {
-                "origin_address": origin_address,
-                "destination_address": destination_address,
-            }
-            if origin_city:
-                arguments["origin_city"] = origin_city
-            if destination_city:
-                arguments["destination_city"] = destination_city
-
-            result = _run_sync(t.ainvoke(arguments))
-            print(f"路线规划结果: {str(result)[:200]}...")
-            # TODO: 解析为统一结构 { distance, duration, route_type, description }
-            return {}
-        except Exception as e:
-            print(f"❌ 路线规划失败: {str(e)}")
-            return {}
-
-    # ------ 地理编码 ------
-
-    def geocode(
-        self,
-        address: str,
-        city: Optional[str] = None,
-    ) -> Optional["Location"]:
-        """地理编码（地址->坐标）。调用 maps_geo。"""
-        self._ensure()
-        tool_name = "maps_geo"
-        t = self._tools.get(tool_name)
-        if t is None:
-            print(f"❌ 未找到工具: {tool_name}")
-            return None
-
-        try:
-            arguments: Dict[str, Any] = {"address": address}
-            if city:
-                arguments["city"] = city
-            result = _run_sync(t.ainvoke(arguments))
-            print(f"地理编码结果: {str(result)[:200]}...")
-            # TODO: 解析出 Location(longitude=..., latitude=...)
-            return None
-        except Exception as e:
-            print(f"❌ 地理编码失败: {str(e)}")
-            return None
-
-    # ------ POI 详情 ------
-
-    def get_poi_detail(self, poi_id: str) -> Dict[str, Any]:
-        """获取POI详情。调用 maps_search_detail。"""
-        self._ensure()
-        tool_name = "maps_search_detail"
-        t = self._tools.get(tool_name)
-        if t is None:
-            print(f"❌ 未找到工具: {tool_name}")
-            return {}
-
-        try:
-            result = _run_sync(t.ainvoke({"id": poi_id}))
-            # 兼容你原来的 JSON 提取逻辑
-            if isinstance(result, str):
-                json_match = re.search(r"\{.*\}", result, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
-            return {"raw": result}
-        except Exception as e:
-            print(f"❌ 获取POI详情失败: {str(e)}")
-            return {}
-
 
 # ========== 全局单例（与原风格一致） ==========
 
@@ -361,8 +210,8 @@ async def get_mcp_tools_async() -> List[Any]:
         _amap_mcp_client = client
         _amap_tools = MCPToolSet(tools)
         
-        print("✅ 高德地图MCP客户端初始化成功")
-        print(f"  工具数量: {len(_amap_tools.list_names())}")
+        logger.info("✅ 高德地图MCP客户端初始化成功")
+        logger.info(f"  工具数量: {len(_amap_tools.list_names())}")
     
     return [t._tool for t in _amap_tools._tools]
 
@@ -405,17 +254,17 @@ def print_mcp_tools_info(verbose: bool = False) -> None:
     
     _, toolset = _get_client_and_tools()
     
-    print("\n" + "="*60)
-    print("📋 MCP 工具详细信息")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("📋 MCP 工具详细信息")
+    logger.info("="*60)
     
     for tool_item in toolset._tools:
         tool = tool_item._tool
         name = getattr(tool, "name", "未知")
         description = getattr(tool, "description", "无描述")
         
-        print(f"\n🔧 工具名称: {name}")
-        print(f"   描述: {description[:100]}..." if len(description) > 100 else f"   描述: {description}")
+        logger.info(f"\n🔧 工具名称: {name}")
+        logger.info(f"   描述: {description[:100]}..." if len(description) > 100 else f"   描述: {description}")
         
         args_schema = getattr(tool, "args_schema", None)
         if args_schema:
@@ -426,24 +275,24 @@ def print_mcp_tools_info(verbose: bool = False) -> None:
                 schema = args_schema.schema() if hasattr(args_schema, "schema") else {}
             
             if verbose:
-                print(f"   完整 Schema:")
-                print(f"   {json.dumps(schema, ensure_ascii=False, indent=6)}")
+                logger.info(f"   完整 Schema:")
+                logger.info(f"   {json.dumps(schema, ensure_ascii=False, indent=6)}")
             else:
                 properties = schema.get("properties", {})
                 required = schema.get("required", [])
                 if properties:
-                    print(f"   参数:")
+                    logger.info(f"   参数:")
                     for param_name, param_info in properties.items():
                         req_mark = "*" if param_name in required else " "
                         param_desc = param_info.get("description", "无描述")
                         param_type = param_info.get("type", "any")
-                        print(f"     [{req_mark}] {param_name} ({param_type}): {param_desc[:50]}..." if len(param_desc) > 50 else f"     [{req_mark}] {param_name} ({param_type}): {param_desc}")
+                        logger.info(f"     [{req_mark}] {param_name} ({param_type}): {param_desc[:50]}..." if len(param_desc) > 50 else f"     [{req_mark}] {param_name} ({param_type}): {param_desc}")
                 else:
-                    print("   参数: 无参数定义")
+                    logger.info("   参数: 无参数定义")
         else:
-            print("   参数: 无参数 schema")
+            logger.info("   参数: 无参数 schema")
     
-    print("\n" + "="*60)
+    logger.info("\n" + "="*60)
 
 
 # ========== 工具分类系统（用于不同子智能体） ==========
@@ -524,7 +373,7 @@ def get_tools_by_category(category: List[str]) -> List[Any]:
         if tool_item:
             tools.append(tool_item._tool)
         else:
-            print(f"⚠️ 工具 '{tool_name}' 不存在，已跳过")
+            logger.info(f"⚠️ 工具 '{tool_name}' 不存在，已跳过")
     
     return tools
 

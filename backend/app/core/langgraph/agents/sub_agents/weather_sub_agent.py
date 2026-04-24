@@ -1,37 +1,18 @@
-WEATHER_AGENT_PROMPT = """你是天气查询专家。你的任务是查询指定城市的天气信息。
-
-**可用工具:**
-- get_travel_weather: 获取指定城市的旅游天气信息
-  - city_name: 城市名称（如：北京、上海、广州）
-  - forecast_days: 预报天数，可选值：3, 7, 10, 15, 30，默认为3天
-
-- search_city: 搜索城市并返回城市信息
-  - city_name: 城市名称（支持模糊搜索）
-
-**职责:**
-- 根据用户提供的城市名称，使用search_city工具查询该城市的相关信息
-- 根据search_city得到的城市信息，使用get_travel_weather工具查询该城市的旅游天气信息
-- 提供get_travel_weather工具的输出，提供温度、天气状况、风力、湿度、空气质量等关键信息
-
-**注意事项:**
-- 必须使用工具查询天气，不要编造天气信息
-"""
-
 from app.core.config import settings
+from app.core.logging import logger
 from app.core.langgraph.tools.local import weather_tools
-
-DASHSCOPE_API_KEY = settings.DASHSCOPE_API_KEY
-DASHSCOPE_API_BASE = settings.DASHSCOPE_API_BASE
+from app.core.prompts import WEATHER_AGENT_PROMPT
 
 from langchain_qwq import ChatQwen  
 from langchain.agents import create_agent  
 from langchain.tools import tool
+from langchain_core.messages import ToolMessage
 
 # 初始化语言模型
 model = ChatQwen(
     model_name="qwen3.5-flash-2026-02-23",
-    api_key=DASHSCOPE_API_KEY,
-    api_base=DASHSCOPE_API_BASE,
+    api_key=settings.DASHSCOPE_API_KEY,
+    api_base=settings.DASHSCOPE_API_BASE,
     temperature=0.7,
     max_tokens=1000,
     timeout=180,  # 增加到 3 分钟，支持复杂的天气查询
@@ -44,11 +25,9 @@ weather_sub_agent = create_agent(
     tools=weather_tools,
     system_prompt=WEATHER_AGENT_PROMPT,
 )
-print("weather子智能体创建完成")
+logger.info("weather子智能体创建完成")
+
 # 将子智能体封装为一个工具，供主智能体调用
-from langchain_core.messages import ToolMessage
-
-
 @tool("weather_sub_agent", description="天气子智能体，专门用于查询天气信息的任务")
 async def call_weather_sub_agent(query: str) -> dict:
     """调用weather子智能体处理查询，返回文本结果和结构化天气数据。

@@ -5,6 +5,15 @@ from pydantic import BaseModel, Field
 from app.schemas.weather import TravelWeatherData
 from .components import DayPlan, Budget
 
+class TaskPlan(BaseModel):
+    """任务规划结构"""
+    tasks: list[str] = Field(description="任务列表，按执行顺序排列")
+    task_types: list[str] = Field(description="每个任务对应的子智能体类型: weather/attraction/hotel")
+
+class PlanResult(BaseModel):
+    """规划结果"""
+    reasoning: str = Field(description="规划思路")
+    plan: TaskPlan = Field(description="任务计划")
 
 class TripPlan(BaseModel):
     """旅行计划"""

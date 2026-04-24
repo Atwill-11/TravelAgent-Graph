@@ -13,12 +13,14 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
 from psycopg_pool import AsyncConnectionPool
 
-from app.schemas.travel import TripRequest, TripPlan
-from app.schemas.agent import (
+from app.schemas import (
     TravelPlannerState,
     TravelContext,
     TravelPlannerOutput,
+    TripRequest, 
+    TripPlan
 )
+
 from .node import (
     plan_node,
     execute_sub_agent_node,
@@ -334,33 +336,3 @@ def run_travel_planner_sync(
         # 只在一次性脚本中清理资源
         if cleanup:
             loop.run_until_complete(_cleanup_resources(wait_for_tasks=True, timeout=5.0))
-
-
-# ========== 测试入口 ==========
-
-# if __name__ == "__main__":
-#     import asyncio
-#     import sys
-    
-#     # Windows 系统需要使用 SelectorEventLoop 以支持 psycopg
-#     if sys.platform == "win32":
-#         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
-#     test_request = TripRequest(
-#         city="西安",
-#         start_date="2026-04-25",
-#         end_date="2026-04-28",
-#         travel_days=3,
-#         transportation="公共交通",
-#         accommodation="",
-#         preferences=[""],
-#         free_text_input="",
-#     )
-#     print(f"用户需求: {test_request.model_dump()}")
-#     print("="*60)
-    
-#     result = run_travel_planner_sync(test_request)
-#     print("\n规划完成！")
-#     if result:
-#         print(f"城市: {result.city}")
-#         print(f"天数: {len(result.days)}")

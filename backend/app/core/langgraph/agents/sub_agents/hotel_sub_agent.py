@@ -11,7 +11,7 @@ from langchain_core.messages import ToolMessage
 
 # 初始化语言模型
 model = ChatQwen(
-    model_name="qwen3.5-flash-2026-02-23",
+    model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
     api_key=settings.DASHSCOPE_API_KEY,
     api_base=settings.DASHSCOPE_API_BASE,
     temperature=0.7,

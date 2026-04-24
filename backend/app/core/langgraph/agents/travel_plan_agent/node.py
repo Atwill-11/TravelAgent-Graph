@@ -36,7 +36,7 @@ from app.core.prompts import PLAN_MODEL_PROMPT, SUMMARY_PROMPT
 def get_plan_model():
     """获取规划模型"""
     return ChatQwen(
-        model_name="qwen3.5-flash-2026-02-23",
+        model_name=settings.DASHSCOPE_PLAN_LLM_MODEL,
         api_key=settings.DASHSCOPE_API_KEY,
         api_base=settings.DASHSCOPE_API_BASE,
         temperature=0.7,
@@ -49,7 +49,7 @@ def get_plan_model():
 def get_summary_model():
     """获取总结模型"""
     return ChatQwen(
-        model_name="qwen3.5-flash-2026-02-23",
+        model_name=settings.DASHSCOPE_SUMMARY_LLM_MODEL,
         api_key=settings.DASHSCOPE_API_KEY,
         api_base=settings.DASHSCOPE_API_BASE,
         temperature=0.7,

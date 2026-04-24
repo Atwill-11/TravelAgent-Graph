@@ -133,50 +133,66 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
 ## 📁 项目结构
 
 ```
-My-Project/
+TravelAgent-Graph/
 ├── backend/                   # 后端项目（Python + FastAPI）
 │   ├── app/
 │   │   ├── api/v1/            # API 路由层
+│   │   │   ├── api.py         # API 路由聚合
 │   │   │   ├── auth.py        # 认证授权（JWT）
-│   │   │   ├── chatbot.py     # 聊天机器人端点
 │   │   │   └── travel.py      # 旅游规划端点
 │   │   ├── core/              # 核心模块
 │   │   │   ├── langgraph/     # LangGraph Agent 核心
-│   │   │   │   ├── agents/    # 子 Agent 定义
+│   │   │   │   ├── agents/    # Agent 定义
 │   │   │   │   │   ├── sub_agents/         # 景点/酒店/天气子 Agent
 │   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent
 │   │   │   │   ├── tools/     # 工具定义
 │   │   │   │   │   ├── local/  # 本地工具（和风天气）
 │   │   │   │   │   └── mcp/    # MCP 工具（高德地图）
-│   │   │   │   └── graph.py   # Agent 主图
+│   │   │   │   └── __init__.py
+│   │   │   ├── prompts/       # Prompt 模板
 │   │   │   ├── config.py      # 配置管理
+│   │   │   ├── limiter.py     # 速率限制
 │   │   │   ├── logging.py     # 结构化日志
 │   │   │   └── middleware.py  # 中间件
 │   │   ├── models/            # 数据库模型（SQLModel）
 │   │   ├── schemas/           # Pydantic 数据模型
+│   │   │   ├── agent/         # Agent 相关模型
+│   │   │   ├── common/        # 通用模型
+│   │   │   ├── travel/        # 旅游规划模型
+│   │   │   ├── weather/       # 天气模型
+│   │   │   └── auth.py        # 认证模型
 │   │   ├── services/          # 服务层
-│   │   │   ├── llm.py         # LLM 服务（多模型降级）
 │   │   │   └── database.py    # 数据库服务
-│   │   └── utils/             # 工具函数
+│   │   ├── utils/             # 工具函数
+│   │   │   ├── auth.py        # 认证工具
+│   │   │   └── sanitization.py # 数据清洗
+│   │   └── main.py            # 应用入口
+│   ├── Dockerfile             # 后端 Docker 镜像
 │   ├── pyproject.toml         # 项目依赖
-│   ├── uv.lock                # 锁定依赖版本
-│   └── .env.example           # 环境变量示例
+│   └── uv.lock                # 锁定依赖版本
 │
 ├── frontend/                  # 前端项目（Vue 3 + TypeScript + Vite）
 │   ├── src/
 │   │   ├── components/        # 可复用组件
+│   │   │   └── SessionSidebar.vue
 │   │   ├── views/             # 页面视图
+│   │   │   ├── Home.vue       # 主页
+│   │   │   ├── Login.vue      # 登录页
+│   │   │   └── Result.vue     # 结果页
 │   │   ├── router/            # 路由配置
 │   │   ├── services/          # API 服务
 │   │   ├── types/             # TypeScript 类型定义
 │   │   ├── App.vue            # 根组件
 │   │   └── main.ts            # 入口文件
 │   ├── public/                # 静态资源
+│   ├── Dockerfile             # 前端 Docker 镜像
+│   ├── nginx.conf             # Nginx 配置
 │   ├── package.json           # 前端依赖
 │   ├── tsconfig.json          # TypeScript 配置
-│   ├── vite.config.ts         # Vite 配置
-│   └── .env.example           # 环境变量示例
+│   └── vite.config.ts         # Vite 配置
 │
+├── docker-compose.yml         # Docker Compose 编排配置
+├── .env.example               # 环境变量示例
 └── README.md                  # 项目文档
 ```
 
@@ -189,8 +205,115 @@ My-Project/
 - Python 3.11+
 - PostgreSQL 14+
 - uv（包管理器）
+- Docker & Docker Compose（用于容器化部署）
 
-## 📡 API 接口
+---
+
+## 🐳 Docker 部署
+
+### 前置要求
+
+- Docker Desktop 20.10+
+- Docker Compose v2.0+
+
+### 服务端口映射
+
+| 服务           | 容器端口 | 主机端口 | 访问地址                   |
+| -------------- | -------- | -------- | -------------------------- |
+| 前端 (Nginx)   | 80       | 3001     | http://localhost:3001      |
+| 后端 (FastAPI) | 8000     | 7999     | http://localhost:7999/docs |
+| PostgreSQL     | 5432     | 5433     | localhost:5433             |
+
+### 配置环境变量
+
+1. 在项目根目录创建 `.env` 文件：
+
+```bash
+# Docker Compose 基础配置
+APP_ENV=development
+
+# 数据库配置
+POSTGRES_DB=projectdb
+POSTGRES_USER=myuser
+POSTGRES_PASSWORD=mypassword
+POSTGRES_POOL_SIZE=5
+POSTGRES_MAX_OVERFLOW=10
+
+# JWT 配置
+JWT_SECRET_KEY=your-jwt-secret-key
+
+# 前端构建配置
+VITE_API_BASE_URL=
+VITE_AMAP_WEB_JS_KEY=your_amap_web_js_key
+
+# 后端 API Keys
+DASHSCOPE_API_KEY=your_dashscope_key
+LANGFUSE_SECRET_KEY=your_langfuse_secret_key
+LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
+LANGFUSE_HOST=http://host.docker.internal:3000
+QWEATHER_API_KEY=your_qweather_key
+AMAP_API_KEY=your_amap_key
+
+# CORS 配置
+ALLOWED_ORIGINS=http://localhost:3001,http://localhost:7999
+
+# 日志配置
+LOG_LEVEL=INFO
+LOG_FORMAT=console
+LOG_DIR=../projectlogs
+```
+
+2. **Langfuse 配置说明**（可选）：
+
+如果 Langfuse 运行在独立的 Docker 容器中，使用 `host.docker.internal` 访问宿主机网络：
+
+```bash
+LANGFUSE_HOST=http://host.docker.internal:3000
+```
+
+### 构建和启动
+
+```bash
+# 进入项目根目录
+cd 实际项目位置
+
+# 构建并启动所有服务
+docker compose up -d --build
+
+# 查看服务状态
+docker compose ps
+
+# 查看日志
+docker compose logs -f           # 所有服务
+docker compose logs -f backend   # 仅后端
+
+# 停止服务
+docker compose down
+```
+
+### 验证部署
+
+```bash
+# 1. 检查容器状态
+docker compose ps
+
+# 2. 测试后端健康检查
+curl http://localhost:7999/health
+
+# 3. 测试前端页面
+curl http://localhost:3001
+
+# 4. 测试前端代理到后端
+curl http://localhost:3001/health
+```
+
+### 访问应用
+
+- **前端**：http://localhost:3001
+- **后端 API 文档**：http://localhost:7999/docs
+- **后端 ReDoc**：http://localhost:7999/redoc
+
+---
 
 ### 认证相关
 

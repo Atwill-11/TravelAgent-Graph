@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: no
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    ports:
+      - "7999:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./projectlogs:/projectlogs
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_POOL_SIZE=${POSTGRES_POOL_SIZE:-5}
+      - POSTGRES_MAX_OVERFLOW=${POSTGRES_MAX_OVERFLOW:-10}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-secret-key-for-learning-only}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+      - DASHSCOPE_API_BASE=${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - DASHSCOPE_DEFAULT_LLM_MODEL=${DASHSCOPE_DEFAULT_LLM_MODEL:-qwen-plus}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-http://host.docker.internal:3000}
+      - QWEATHER_API_KEY=${QWEATHER_API_KEY:-}
+      - QWEATHER_API_HOST=${QWEATHER_API_HOST:-}
+      - AMAP_API_KEY=${AMAP_API_KEY:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8000}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-console}
+      - LOG_DIR=${LOG_DIR:-../projectlogs}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: no
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_AMAP_WEB_JS_KEY: ${VITE_AMAP_WEB_JS_KEY:-}
+    ports:
+      - "3001:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: no
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres-data:

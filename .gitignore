@@ -1,2 +1,8 @@
 # 日志文件
 projectlogs/
+
+# 环境变量文件（敏感信息）
+.env
+.env.*
+# !表示不忽略 .env.example 和 .env.template 文件
+!.env.example

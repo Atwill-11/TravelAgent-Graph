@@ -7,6 +7,13 @@ import type {
   UserResponse,
   ChatMessage,
   ChatResponse,
+  SSEPlanEvent,
+  SSEExecuteEvent,
+  SSESummarizeEvent,
+  SSEDoneEvent,
+  SSEErrorEvent,
+  SSEStartEvent,
+  ThinkingStep,
 } from "@/types";
 
 const API_BASE_URL =
@@ -211,6 +218,119 @@ export async function sendChatStream(
   } catch (error: any) {
     onError(error.message || "聊天请求失败");
   }
+}
+
+export type SSEEventHandlers = {
+  onStart?: (data: SSEStartEvent) => void
+  onPlan?: (data: SSEPlanEvent) => void
+  onExecute?: (data: SSEExecuteEvent) => void
+  onSummarize?: (data: SSESummarizeEvent) => void
+  onDone?: (data: SSEDoneEvent) => void
+  onError?: (data: SSEErrorEvent) => void
+}
+
+export async function generateTripPlanStream(
+  formData: TripFormData,
+  handlers: SSEEventHandlers,
+  maxRetries: number = 3,
+): Promise<void> {
+  const token =
+    localStorage.getItem("session_token") ||
+    localStorage.getItem("access_token")
+  if (!token) {
+    handlers.onError?.({ message: "请先选择或创建会话", success: false })
+    return
+  }
+
+  let retryCount = 0
+
+  const attempt = async (): Promise<void> => {
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/v1/trip/plan/stream`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(formData),
+        },
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null)
+        throw new Error(
+          errorData?.detail || `HTTP error! status: ${response.status}`,
+        )
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error("无法获取响应流")
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+
+        let currentEvent = ""
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith("data: ")) {
+            const jsonStr = line.slice(6)
+            try {
+              const data = JSON.parse(jsonStr)
+              switch (currentEvent) {
+                case "start":
+                  handlers.onStart?.(data as SSEStartEvent)
+                  break
+                case "plan":
+                  handlers.onPlan?.(data as SSEPlanEvent)
+                  break
+                case "execute":
+                  handlers.onExecute?.(data as SSEExecuteEvent)
+                  break
+                case "summarize":
+                  handlers.onSummarize?.(data as SSESummarizeEvent)
+                  break
+                case "done":
+                  handlers.onDone?.(data as SSEDoneEvent)
+                  break
+                case "error":
+                  handlers.onError?.(data as SSEErrorEvent)
+                  break
+              }
+            } catch {
+              // skip invalid JSON
+            }
+            currentEvent = ""
+          }
+        }
+      }
+    } catch (error: any) {
+      if (retryCount < maxRetries) {
+        retryCount++
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        return attempt()
+      }
+      handlers.onError?.({
+        message: error.message || "流式请求失败",
+        success: false,
+      })
+    }
+  }
+
+  await attempt()
 }
 
 export async function healthCheck(): Promise<any> {

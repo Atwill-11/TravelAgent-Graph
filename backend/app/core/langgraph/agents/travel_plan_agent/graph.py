@@ -26,6 +26,7 @@ from .node import (
     execute_sub_agent_node,
     summarize_node,
     should_continue,
+    NODE_DISPLAY_NAMES,
 )
 from .travel_memory import TravelMemoryManager
 
@@ -295,6 +296,83 @@ def _build_user_message(request: TripRequest, historical_context: str = "") -> s
         msg += "\n注意：请在规划时优先考虑用户的本次规划的请求，再参考历史偏好和需求。\n"
     
     return msg
+
+
+async def stream_travel_planner(
+    request: TripRequest,
+    session_id: str = "default",
+    user_id: str = "default_user",
+):
+    """
+    流式运行旅游规划智能体，逐步yield各节点的状态更新。
+    
+    Args:
+        request: 旅行请求
+        session_id: 会话ID
+        user_id: 用户ID
+    
+    Yields:
+        dict: 每个节点执行后的状态更新事件
+    """
+    graph = build_travel_planner_graph()
+    
+    historical_context = ""
+    try:
+        memory_manager = await _get_memory_manager()
+        if memory_manager:
+            historical_context = await memory_manager.get_relevant_plans(user_id, request, session_id)
+            if historical_context:
+                logger.info(
+                    "成功获取历史规划上下文",
+                    user_id=user_id,
+                    session_id=session_id,
+                    context_length=len(historical_context),
+                )
+    except Exception as e:
+        logger.warning("获取历史规划失败，继续执行", error=str(e))
+    
+    initial_state = {
+        "trip_request": request,
+        "messages": [HumanMessage(content=_build_user_message(request, historical_context))],
+        "plan": [],
+        "sub_agent_results": [],
+        "current_task": None,
+        "trip_plan": None,
+        "notes": {},
+    }
+    
+    context = TravelContext(
+        user_id=user_id,
+        session_id=session_id,
+    )
+    
+    safe_user_id = str(user_id) if user_id is not None else None
+    trace_attributes = {}
+    if user_id:
+        trace_attributes["user_id"] = safe_user_id
+    if session_id:
+        trace_attributes["session_id"] = session_id
+    trace_attributes["metadata"] = {
+        "environment": settings.ENVIRONMENT.value,
+        "debug": str(settings.DEBUG).lower(),
+    }
+
+    with propagate_attributes(**trace_attributes):
+        async for event in graph.astream(
+            initial_state,
+            context=context.model_dump(),
+            config={"callbacks": [CallbackHandler()], "stream_mode": "updates"},
+        ):
+            yield event
+    
+    try:
+        memory_manager = await _get_memory_manager()
+        if memory_manager:
+            plan_summary = None
+            await memory_manager.save_plan_request(user_id, request, plan_summary, session_id)
+            logger.info("规划请求已保存到长期记忆", user_id=user_id, session_id=session_id)
+    except Exception as e:
+        logger.warning("保存规划请求失败", error=str(e))
 
 
 def run_travel_planner_sync(

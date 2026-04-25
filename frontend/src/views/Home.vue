@@ -225,7 +225,7 @@
             </a-button>
           </a-form-item>
 
-          <a-form-item v-if="loading">
+          <a-form-item v-if="loading && !useStreamMode">
             <div class="loading-container">
               <a-progress
                 :percent="loadingProgress"
@@ -235,6 +235,14 @@
               />
               <p class="loading-status">{{ loadingStatus }}</p>
             </div>
+          </a-form-item>
+
+          <a-form-item v-if="loading && useStreamMode">
+            <ThinkingProcess
+              :steps="thinkingSteps"
+              :is-running="isThinkingRunning"
+              :has-error="hasThinkingError"
+            />
           </a-form-item>
         </a-form>
       </a-card>
@@ -246,10 +254,11 @@
 import { ref, reactive, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { message } from "ant-design-vue";
-import { generateTripPlan, createSession, getSessions } from "@/services/api";
-import type { TripFormData, SessionResponse } from "@/types";
+import { generateTripPlan, generateTripPlanStream, createSession, getSessions } from "@/services/api";
+import type { TripFormData, SessionResponse, ThinkingStep, SSEPlanEvent, SSEExecuteEvent, SSESummarizeEvent } from "@/types";
 import type { Dayjs } from "dayjs";
 import SessionSidebar from "@/components/SessionSidebar.vue";
+import ThinkingProcess from "@/components/ThinkingProcess.vue";
 
 const router = useRouter();
 const loading = ref(false);
@@ -257,6 +266,10 @@ const loadingProgress = ref(0);
 const loadingStatus = ref("");
 const currentSession = ref<SessionResponse | null>(null);
 const sidebarRef = ref<InstanceType<typeof SessionSidebar> | null>(null);
+const thinkingSteps = ref<ThinkingStep[]>([]);
+const isThinkingRunning = ref(false);
+const hasThinkingError = ref(false);
+const useStreamMode = ref(true);
 
 type HomeFormData = Omit<TripFormData, "start_date" | "end_date"> & {
   start_date: Dayjs | null;
@@ -355,7 +368,101 @@ const handleSubmit = async () => {
   loading.value = true;
   loadingProgress.value = 0;
   loadingStatus.value = "正在初始化...";
+  thinkingSteps.value = [];
+  isThinkingRunning.value = true;
+  hasThinkingError.value = false;
 
+  const requestData: TripFormData = {
+    city: formData.city,
+    start_date: formData.start_date.format("YYYY-MM-DD"),
+    end_date: formData.end_date.format("YYYY-MM-DD"),
+    travel_days: formData.travel_days,
+    transportation: formData.transportation,
+    accommodation: formData.accommodation,
+    preferences: formData.preferences,
+    free_text_input: formData.free_text_input,
+  };
+
+  if (useStreamMode.value) {
+    await handleSubmitStream(requestData);
+  } else {
+    await handleSubmitNonStream(requestData, session);
+  }
+};
+
+const handleSubmitStream = async (requestData: TripFormData) => {
+  try {
+    await generateTripPlanStream(requestData, {
+      onStart: (data) => {
+        loadingStatus.value = data.message;
+        addThinkingStep("start", "开始", "🚀", data.message, "running");
+      },
+      onPlan: (data: SSEPlanEvent) => {
+        loadingStatus.value = data.message;
+        completeCurrentStep();
+        addThinkingStep(data.node, data.display_name, data.icon, data.message, "running", undefined, data.plan_items);
+      },
+      onExecute: (data: SSEExecuteEvent) => {
+        loadingStatus.value = data.message;
+        const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+        if (lastStep && lastStep.node === "execute" && lastStep.status === "running") {
+          lastStep.message = data.message;
+          lastStep.details = data.current_task || undefined;
+        } else {
+          completeCurrentStep();
+          addThinkingStep(data.node, data.display_name, data.icon, data.message, "running", data.current_task || undefined);
+        }
+        loadingProgress.value = Math.min(90, loadingProgress.value + 15);
+      },
+      onSummarize: (data: SSESummarizeEvent) => {
+        loadingStatus.value = data.message;
+        completeCurrentStep();
+        addThinkingStep(data.node, data.display_name, data.icon, data.message, "running");
+        loadingProgress.value = 95;
+        if (data.trip_plan) {
+          sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
+        }
+      },
+      onDone: (data) => {
+        completeCurrentStep();
+        isThinkingRunning.value = false;
+        loadingProgress.value = 100;
+        loadingStatus.value = data.message;
+        message.success("旅行计划生成成功!");
+        setTimeout(() => {
+          loading.value = false;
+          router.push("/result");
+        }, 800);
+      },
+      onError: (data) => {
+        hasThinkingError.value = true;
+        isThinkingRunning.value = false;
+        const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+        if (lastStep && lastStep.status === "running") {
+          lastStep.status = "failed";
+          lastStep.message = data.message;
+        } else {
+          addThinkingStep("error", "错误", "❌", data.message, "failed");
+        }
+        message.error(data.message || "生成旅行计划失败");
+        setTimeout(() => {
+          loading.value = false;
+          loadingProgress.value = 0;
+          loadingStatus.value = "";
+        }, 2000);
+      },
+    });
+  } catch (error: any) {
+    hasThinkingError.value = true;
+    isThinkingRunning.value = false;
+    message.error(error.message || "流式请求失败");
+    setTimeout(() => {
+      loading.value = false;
+    }, 1000);
+  }
+};
+
+const handleSubmitNonStream = async (requestData: TripFormData, session: SessionResponse) => {
   const progressInterval = setInterval(() => {
     if (loadingProgress.value < 90) {
       loadingProgress.value += 10;
@@ -372,17 +479,6 @@ const handleSubmit = async () => {
   }, 500);
 
   try {
-    const requestData: TripFormData = {
-      city: formData.city,
-      start_date: formData.start_date.format("YYYY-MM-DD"),
-      end_date: formData.end_date.format("YYYY-MM-DD"),
-      travel_days: formData.travel_days,
-      transportation: formData.transportation,
-      accommodation: formData.accommodation,
-      preferences: formData.preferences,
-      free_text_input: formData.free_text_input,
-    };
-
     const response = await generateTripPlan(
       requestData,
       session.token.access_token,
@@ -396,20 +492,46 @@ const handleSubmit = async () => {
       sessionStorage.setItem("tripPlan", JSON.stringify(response.data));
       message.success("旅行计划生成成功!");
       setTimeout(() => {
+        loading.value = false;
         router.push("/result");
       }, 500);
     } else {
       message.error(response.message || "生成失败");
+      loading.value = false;
     }
   } catch (error: any) {
     clearInterval(progressInterval);
     message.error(error.message || "生成旅行计划失败，请稍后重试");
-  } finally {
-    setTimeout(() => {
-      loading.value = false;
-      loadingProgress.value = 0;
-      loadingStatus.value = "";
-    }, 1000);
+    loading.value = false;
+  }
+};
+
+const addThinkingStep = (
+  node: string,
+  display_name: string,
+  icon: string,
+  msg: string,
+  status: ThinkingStep["status"],
+  details?: string,
+  plan_items?: any[],
+) => {
+  thinkingSteps.value.push({
+    id: `${node}-${Date.now()}`,
+    node,
+    display_name,
+    icon,
+    message: msg,
+    status,
+    timestamp: Date.now(),
+    details,
+    plan_items,
+  });
+};
+
+const completeCurrentStep = () => {
+  const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+  if (lastStep && lastStep.status === "running") {
+    lastStep.status = "completed";
   }
 };
 

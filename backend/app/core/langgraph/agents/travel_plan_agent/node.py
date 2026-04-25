@@ -58,6 +58,30 @@ def get_summary_model():
         max_retries=2,
     )
 
+NODE_DISPLAY_NAMES = {
+    "plan": "任务规划",
+    "execute": "执行子任务",
+    "summarize": "生成旅行计划",
+}
+
+NODE_DISPLAY_ICONS = {
+    "plan": "🧠",
+    "execute": "⚙️",
+    "summarize": "📋",
+}
+
+SUB_AGENT_DISPLAY_NAMES = {
+    "weather": "天气查询",
+    "attraction": "景点搜索",
+    "hotel": "酒店推荐",
+}
+
+SUB_AGENT_DISPLAY_ICONS = {
+    "weather": "🌤️",
+    "attraction": "🏛️",
+    "hotel": "🏨",
+}
+
 # ========== 子智能体路由映射 ==========
 
 SUB_AGENT_MAP = {

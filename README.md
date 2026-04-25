@@ -20,6 +20,7 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
 - 💾 **长期记忆系统**：基于 AsyncPostgresStore + 向量搜索实现个性化推荐
 - 🔄 **LLM 多模型降级**：支持 OpenAI/Qwen 等多厂商模型，自动重试 + 环形降级
 - 📊 **全链路可观测**：集成 Langfuse 实现 Trace 级别的调用追踪与调试
+- 🌊 **SSE 流式响应**：实时展示 Agent 思考过程，支持断线重连与打字效果
 - ⚡ **生产级特性**：状态持久化、流式响应、速率限制、结构化日志、JWT 认证
 
 ---
@@ -128,6 +129,14 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
 - 自动记录 user_id、session_id、environment 等上下文
 - 支持 Trace 级别的分析与调试
 
+### 6. SSE 流式响应
+
+- **实时思考过程展示**：基于 Server-Sent Events 技术，实时推送 Agent 各节点的执行状态
+- **断线重连机制**：前端支持指数退避重连策略，确保网络波动时的用户体验
+- **打字效果动画**：前端组件支持状态动画、时间线展示，提升交互体验
+- **事件类型丰富**：支持 `start`、`plan`、`execute`、`summarize`、`done`、`error` 等多种事件类型
+- **兼容非流式接口**：保留原有非流式 API，前端可切换使用
+
 ---
 
 ## 📁 项目结构
@@ -139,12 +148,12 @@ TravelAgent-Graph/
 │   │   ├── api/v1/            # API 路由层
 │   │   │   ├── api.py         # API 路由聚合
 │   │   │   ├── auth.py        # 认证授权（JWT）
-│   │   │   └── travel.py      # 旅游规划端点
+│   │   │   └── travel.py      # 旅游规划端点（含 SSE 流式响应）
 │   │   ├── core/              # 核心模块
 │   │   │   ├── langgraph/     # LangGraph Agent 核心
 │   │   │   │   ├── agents/    # Agent 定义
 │   │   │   │   │   ├── sub_agents/         # 景点/酒店/天气子 Agent
-│   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent
+│   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent（含流式运行函数）
 │   │   │   │   ├── tools/     # 工具定义
 │   │   │   │   │   ├── local/  # 本地工具（和风天气）
 │   │   │   │   │   └── mcp/    # MCP 工具（高德地图）
@@ -174,14 +183,15 @@ TravelAgent-Graph/
 ├── frontend/                  # 前端项目（Vue 3 + TypeScript + Vite）
 │   ├── src/
 │   │   ├── components/        # 可复用组件
-│   │   │   └── SessionSidebar.vue
+│   │   │   ├── SessionSidebar.vue    # 会话侧边栏
+│   │   │   └── ThinkingProcess.vue   # SSE 思考过程展示组件
 │   │   ├── views/             # 页面视图
-│   │   │   ├── Home.vue       # 主页
+│   │   │   ├── Home.vue       # 主页（含 SSE 流式响应集成）
 │   │   │   ├── Login.vue      # 登录页
 │   │   │   └── Result.vue     # 结果页
 │   │   ├── router/            # 路由配置
-│   │   ├── services/          # API 服务
-│   │   ├── types/             # TypeScript 类型定义
+│   │   ├── services/          # API 服务（含 SSE 流式 API）
+│   │   ├── types/             # TypeScript 类型定义（含 SSE 事件类型）
 │   │   ├── App.vue            # 根组件
 │   │   └── main.ts            # 入口文件
 │   ├── public/                # 静态资源
@@ -326,7 +336,8 @@ curl http://localhost:3001/health
 
 ### 旅游规划
 
-- `POST /api/v1/trip/plan` - 生成旅行计划
+- `POST /api/v1/trip/plan` - 生成旅行计划（非流式）
+- `POST /api/v1/trip/plan/stream` - 流式生成旅行计划（SSE），实时展示 Agent 思考过程
 
 ### 健康检查
 
@@ -345,6 +356,7 @@ curl http://localhost:3001/health
 | **可观测性**     | Langfuse + propagate_attributes | 全链路 Trace 追踪               |
 | **状态持久化**   | AsyncPostgresSaver              | 支持跨会话恢复                  |
 | **结构化日志**   | structlog + ContextVar          | 请求级日志上下文                |
+| **SSE 流式响应** | StreamingResponse + fetch API   | 实时展示 Agent 思考过程         |
 
 ---
 

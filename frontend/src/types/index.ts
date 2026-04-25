@@ -170,3 +170,64 @@ export interface StreamResponse {
   content: string
   done: boolean
 }
+
+export interface SSEPlanItem {
+  task: string
+  type: string
+  type_display: string
+  icon: string
+}
+
+export interface SSEStepEvent {
+  node: string
+  display_name: string
+  icon: string
+  message: string
+}
+
+export interface SSEPlanEvent extends SSEStepEvent {
+  plan_items: SSEPlanItem[]
+  messages: string[]
+}
+
+export interface SSEExecuteEvent extends SSEStepEvent {
+  current_task: string | null
+  task_type: string | null
+  task_type_display: string
+  task_icon: string
+  task_status: string | null
+  messages: string[]
+}
+
+export interface SSESummarizeEvent extends SSEStepEvent {
+  trip_plan: TripPlan | null
+  suggestions: string
+  messages: string[]
+}
+
+export interface SSEDoneEvent {
+  message: string
+  success: boolean
+}
+
+export interface SSEErrorEvent {
+  message: string
+  success: boolean
+}
+
+export interface SSEStartEvent {
+  message: string
+  session_id: string
+}
+
+export interface ThinkingStep {
+  id: string
+  node: string
+  display_name: string
+  icon: string
+  message: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  timestamp: number
+  details?: string
+  plan_items?: SSEPlanItem[]
+}

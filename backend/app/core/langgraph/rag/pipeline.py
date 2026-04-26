@@ -21,7 +21,7 @@ RAG Pipeline 各环节说明：
    - 嵌入过程：文本 → DashScope API → 1024维浮点向量
 
 4. 向量存储（Vector Storage）：
-   - 使用PGVector将向量存储到PostgreSQL+pgvector数据库
+   - 使用PGVectorStore将向量存储到PostgreSQL+pgvector数据库
    - 表名：travel_knowledge，与长期记忆表隔离
    - 支持增量添加文档，避免重复嵌入
 
@@ -45,7 +45,7 @@ RAG Pipeline 各环节说明：
                                                    ▼
   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
   │  最终回答     │ ←── │  LLM生成     │ ←── │  向量存储     │
-  │ (Answer)     │     │ (Generation) │     │ (PGVector)   │
+  │ (Answer)     │     │ (Generation) │     │ (PGVectorStore)│
   └──────────────┘     └──────────────┘     └──────┬───────┘
                                                    ▲
                                            ┌──────┴───────┐
@@ -54,14 +54,15 @@ RAG Pipeline 各环节说明：
                                            └──────────────┘
 """
 
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import DashScopeEmbeddings
-from langchain_community.vectorstores import PGVector
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_postgres import PGEngine, PGVectorStore
 from langchain_qwq import ChatQwen
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -109,7 +110,8 @@ class RAGPipeline:
     """
 
     def __init__(self):
-        self._vector_store: Optional[PGVector] = None
+        self._vector_store: Optional[PGVectorStore] = None
+        self._engine: Optional[PGEngine] = None
         self._embeddings: Optional[DashScopeEmbeddings] = None
         self._splitter: Optional[RecursiveCharacterTextSplitter] = None
         self._initialized = False
@@ -118,17 +120,29 @@ class RAGPipeline:
     def is_initialized(self) -> bool:
         return self._initialized and self._vector_store is not None
 
-    def _get_connection_string(self) -> str:
-        """构建PostgreSQL连接字符串。
+    def _get_async_connection_string(self) -> str:
+        """构建异步PostgreSQL连接字符串。
 
-        langchain_community PGVector使用psycopg2驱动：
-        postgresql+psycopg2://user:password@host:port/dbname
+        langchain_postgres PGVectorStore使用asyncpg驱动进行异步操作：
+        postgresql+asyncpg://user:password@host:port/dbname
         """
         return (
-            f"postgresql+psycopg2://"
+            f"postgresql+asyncpg://"
             f"{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
             f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
         )
+
+    def _get_engine(self) -> PGEngine:
+        """获取PGEngine连接池实例。
+
+        PGEngine配置了共享连接池，是行业最佳实践，
+        可以管理连接数量并通过缓存的数据库连接减少延迟。
+        """
+        if self._engine is None:
+            connection_string = self._get_async_connection_string()
+            self._engine = PGEngine.from_connection_string(url=connection_string)
+            logger.info("PGEngine连接池初始化完成")
+        return self._engine
 
     def _get_embeddings(self) -> DashScopeEmbeddings:
         """获取嵌入模型实例。
@@ -240,6 +254,9 @@ class RAGPipeline:
         splitter = self._get_splitter()
         chunks = splitter.split_documents(documents)
 
+        for chunk in chunks:
+            chunk.id = str(uuid.uuid4())
+
         logger.info(
             "文档分块完成",
             original_count=len(documents),
@@ -248,13 +265,36 @@ class RAGPipeline:
         )
         return chunks
 
-    def build_vector_store(self, chunks: List[Document]) -> PGVector:
-        """从文档块构建PGVector向量存储。
+    async def _init_vectorstore_table(self, overwrite_existing: bool = False) -> None:
+        """初始化向量存储表结构。
+
+        创建具有正确schema的表，用于存储向量和文档。
+        当overwrite_existing=True时，会删除旧表并重新创建。
+
+        Args:
+            overwrite_existing: 是否覆盖已有表（用于表结构不匹配时重建）
+        """
+        engine = self._get_engine()
+        await engine.ainit_vectorstore_table(
+            table_name=settings.RAG_COLLECTION_NAME,
+            vector_size=EMBEDDING_DIMS,
+            overwrite_existing=overwrite_existing,
+        )
+        logger.info(
+            "向量存储表初始化完成",
+            table_name=settings.RAG_COLLECTION_NAME,
+            vector_size=EMBEDDING_DIMS,
+            overwrite_existing=overwrite_existing,
+        )
+
+    async def build_vector_store(self, chunks: List[Document]) -> PGVectorStore:
+        """从文档块构建PGVectorStore向量存储。
 
         此方法执行以下操作：
-        1. 调用DashScope Embedding API将每个文本块转换为1024维向量
-        2. 将向量和原始文本存储到PostgreSQL的travel_knowledge表中
-        3. 创建pgvector索引以加速相似度搜索
+        1. 初始化向量存储表结构
+        2. 创建PGVectorStore实例
+        3. 调用DashScope Embedding API将每个文本块转换为1024维向量
+        4. 将向量和原始文本存储到PostgreSQL表中
 
         注意：此操作会调用外部API并写入数据库，耗时取决于文档数量。
 
@@ -262,57 +302,100 @@ class RAGPipeline:
             chunks: 分块后的文档列表
 
         Returns:
-            PGVector向量存储实例
+            PGVectorStore向量存储实例
         """
+        engine = self._get_engine()
         embeddings = self._get_embeddings()
-        connection_string = self._get_connection_string()
 
-        vector_store = PGVector.from_documents(
-            documents=chunks,
-            embedding=embeddings,
-            connection_string=connection_string,
-            collection_name=settings.RAG_COLLECTION_NAME,
-            use_jsonb=True,
-            pre_delete_collection=True,
+        await self._init_vectorstore_table(overwrite_existing=True)
+
+        vector_store = await PGVectorStore.create(
+            engine=engine,
+            table_name=settings.RAG_COLLECTION_NAME,
+            embedding_service=embeddings,
         )
 
+        await vector_store.aadd_documents(chunks)
+
         logger.info(
-            "PGVector向量存储构建完成",
-            collection_name=settings.RAG_COLLECTION_NAME,
+            "PGVectorStore向量存储构建完成",
+            table_name=settings.RAG_COLLECTION_NAME,
             vector_count=len(chunks),
             embedding_model=EMBEDDING_MODEL,
         )
         return vector_store
 
-    def connect_vector_store(self) -> PGVector:
-        """连接到已有的PGVector向量存储。
+    async def connect_vector_store(self) -> PGVectorStore:
+        """连接到已有的PGVectorStore向量存储。
 
         与build_vector_store不同，此方法不会重新加载文档和计算嵌入，
         而是直接连接到数据库中已有的向量表。
         适用于向量库已初始化后的后续连接场景。
 
+        如果表不存在或表结构不匹配（如从旧版PGVector迁移），
+        会自动创建或重建表结构。
+
         Returns:
-            PGVector向量存储实例
+            PGVectorStore向量存储实例
         """
+        engine = self._get_engine()
         embeddings = self._get_embeddings()
-        connection_string = self._get_connection_string()
 
-        vector_store = PGVector(
-            embedding_function=embeddings,
-            connection_string=connection_string,
-            collection_name=settings.RAG_COLLECTION_NAME,
-            use_jsonb=True,
+        try:
+            vector_store = await PGVectorStore.create(
+                engine=engine,
+                table_name=settings.RAG_COLLECTION_NAME,
+                embedding_service=embeddings,
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str or "relation" in error_str.lower():
+                logger.warning(
+                    "向量存储表不存在或结构不匹配，正在创建/重建表...",
+                    table_name=settings.RAG_COLLECTION_NAME,
+                    error=error_str,
+                )
+                await self._init_vectorstore_table(overwrite_existing=True)
+                vector_store = await PGVectorStore.create(
+                    engine=engine,
+                    table_name=settings.RAG_COLLECTION_NAME,
+                    embedding_service=embeddings,
+                )
+            else:
+                raise
+
+        logger.info(
+            "已连接到现有PGVectorStore向量存储",
+            table_name=settings.RAG_COLLECTION_NAME,
         )
-
-        logger.info("已连接到现有PGVector向量存储", collection_name=settings.RAG_COLLECTION_NAME)
         return vector_store
+
+    async def _is_table_empty(self) -> bool:
+        """检查向量存储表是否为空。
+
+        Returns:
+            True如果表为空或不存在，False如果表中有数据
+        """
+        from sqlalchemy import text
+
+        engine = self._get_engine()
+
+        async def _check() -> bool:
+            async with engine._pool.connect() as conn:
+                result = await conn.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM {settings.RAG_COLLECTION_NAME} LIMIT 1)")
+                )
+                row = result.fetchone()
+                return not row[0]
+
+        return await engine._run_as_async(_check())
 
     async def initialize(self, force_rebuild: bool = False) -> None:
         """初始化RAG流水线。
 
         初始化流程：
-        1. 如果force_rebuild=True或向量库不存在：加载文档→分块→嵌入→存储
-        2. 否则：直接连接已有的向量库
+        1. 如果force_rebuild=True：删除旧表，加载文档→分块→嵌入→存储
+        2. 否则：连接已有向量库，如果表为空则自动加载数据
 
         建议在应用启动时调用此方法进行初始化。
 
@@ -336,9 +419,32 @@ class RAGPipeline:
                     logger.warning("文档分块结果为空，RAG初始化中止")
                     return
 
-                self._vector_store = self.build_vector_store(chunks)
+                self._vector_store = await self.build_vector_store(chunks)
             else:
-                self._vector_store = self.connect_vector_store()
+                self._vector_store = await self.connect_vector_store()
+
+                try:
+                    is_empty = await self._is_table_empty()
+                except Exception:
+                    is_empty = True
+
+                if is_empty:
+                    logger.info("向量存储表为空，开始加载文档...")
+                    documents = self.load_documents()
+                    if not documents:
+                        logger.warning("未加载到任何文档，RAG初始化中止")
+                        return
+
+                    chunks = self.split_documents(documents)
+                    if not chunks:
+                        logger.warning("文档分块结果为空，RAG初始化中止")
+                        return
+
+                    await self._vector_store.aadd_documents(chunks)
+                    logger.info(
+                        "文档加载完成",
+                        chunk_count=len(chunks),
+                    )
 
             self._initialized = True
             logger.info("RAG流水线初始化完成")
@@ -358,7 +464,7 @@ class RAGPipeline:
 
         检索流程：
         1. 将用户查询通过DashScope Embedding转换为向量
-        2. 在PGVector中执行余弦相似度搜索
+        2. 在PGVectorStore中执行余弦相似度搜索
         3. 返回最相似的k个文档片段
 
         扩展接口说明：

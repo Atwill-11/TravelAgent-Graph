@@ -20,6 +20,7 @@ from app.core.langgraph.agents.sub_agents import (
     call_attraction_sub_agent,
     call_hotel_sub_agent,
     call_weather_sub_agent,
+    call_rag_sub_agent,
 )
 from app.schemas import (
     TravelPlannerState,
@@ -74,12 +75,14 @@ SUB_AGENT_DISPLAY_NAMES = {
     "weather": "天气查询",
     "attraction": "景点搜索",
     "hotel": "酒店推荐",
+    "rag": "知识库检索",
 }
 
 SUB_AGENT_DISPLAY_ICONS = {
     "weather": "🌤️",
     "attraction": "🏛️",
     "hotel": "🏨",
+    "rag": "📚",
 }
 
 # ========== 子智能体路由映射 ==========
@@ -88,6 +91,7 @@ SUB_AGENT_MAP = {
     "weather": call_weather_sub_agent,
     "attraction": call_attraction_sub_agent,
     "hotel": call_hotel_sub_agent,
+    "rag": call_rag_sub_agent,
 }
 
 # ========== 节点函数 ==========

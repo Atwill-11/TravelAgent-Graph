@@ -206,6 +206,13 @@ class Settings:
         self.AMAP_API_KEY = os.getenv("AMAP_API_KEY", "")
         self.VITE_AMAP_WEB_JS_KEY = os.getenv("VITE_AMAP_WEB_JS_KEY", "")
 
+        # RAG 知识库检索设置
+        self.RAG_COLLECTION_NAME = os.getenv("RAG_COLLECTION_NAME", "travel_knowledge")
+        self.RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))
+        self.RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))
+        self.RAG_TOP_K = int(os.getenv("RAG_TOP_K", "4"))
+        self.RAG_FORCE_REBUILD = os.getenv("RAG_FORCE_REBUILD", "false").lower() in ("true", "1", "t", "yes")
+
         # # 评估配置
         # self.EVALUATION_LLM = os.getenv("EVALUATION_LLM", "gpt-5")
         # self.EVALUATION_BASE_URL = os.getenv("EVALUATION_BASE_URL", "https://api.openai.com/v1")

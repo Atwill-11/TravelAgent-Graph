@@ -18,7 +18,7 @@ class TaskItem(BaseModel):
     """单个任务项。"""
 
     task: str = Field(description="任务描述")
-    type: str = Field(description="任务类型: weather/attraction/hotel")
+    type: str = Field(description="任务类型: weather/attraction/hotel/rag")
     status: str = Field(default="pending", description="状态: pending/completed/failed")
     result: Optional[str] = Field(default=None, description="执行结果")
 

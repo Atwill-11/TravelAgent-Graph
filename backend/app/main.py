@@ -29,6 +29,7 @@ from app.api.v1.api import api_router
 from app.services.database import database_service
 from app.core.langgraph.agents.travel_plan_agent.graph import (
     _get_memory_manager,
+    _get_checkpointer,
     _cleanup_resources,
 )
 
@@ -58,10 +59,13 @@ async def lifespan(app: FastAPI):
         logger.info("旅游规划助手初始化成功")
     except Exception as e:
         logger.error("旅游规划助手初始化失败", error=str(e), exc_info=True)
-        # 即使初始化失败也继续运行，因为可能是可选功能
     
-    # 其他启动逻辑...
-    # 例如：数据库连接、缓存初始化等
+    # 初始化检查点器
+    try:
+        await _get_checkpointer()
+        logger.info("检查点器初始化成功")
+    except Exception as e:
+        logger.error("检查点器初始化失败", error=str(e), exc_info=True)
     
     logger.info("应用启动完成")
     

@@ -205,6 +205,17 @@ export interface SSESummarizeEvent extends SSEStepEvent {
   messages: string[]
 }
 
+export interface SSEReviewEvent extends SSEStepEvent {
+  trip_plan: TripPlan | null
+  messages: string[]
+  user_decision: string
+}
+
+export interface SSEResumeRequest {
+  action: 'complete' | 'modify'
+  feedback?: string
+}
+
 export interface SSEDoneEvent {
   message: string
   success: boolean

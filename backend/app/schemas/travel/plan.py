@@ -14,6 +14,8 @@ class PlanResult(BaseModel):
     """规划结果"""
     reasoning: str = Field(description="规划思路")
     plan: TaskPlan = Field(description="任务计划")
+    updated_end_date: Optional[str] = Field(default=None, description="更新后的结束日期(仅当用户修改涉及日期变更时)")
+    updated_travel_days: Optional[int] = Field(default=None, description="更新后的旅行天数(仅当用户修改涉及天数变更时)")
 
 class TripPlan(BaseModel):
     """旅行计划"""

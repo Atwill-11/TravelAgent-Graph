@@ -37,16 +37,91 @@
               <span>🌤️ 天气信息</span>
             </a-menu-item>
           </a-menu>
+
+          <div v-if="reviewModalVisible" class="side-review-panel">
+            <div class="side-review-header">
+              <span>旅行计划审阅</span>
+            </div>
+            <div class="side-review-body">
+              <p class="side-review-desc">
+                您的旅行计划已生成，请审阅后选择操作：
+              </p>
+              <a-textarea
+                v-model:value="reviewFeedback"
+                placeholder="请输入修改意见（如：我要新增一天的旅游计划、换一个酒店等）..."
+                :rows="3"
+                class="side-review-input"
+                :disabled="isModifying"
+              />
+              <div class="side-review-actions">
+                <a-button
+                  type="primary"
+                  block
+                  :loading="isResuming"
+                  :disabled="isModifying"
+                  @click="handleCompletePlan"
+                >
+                  ✅ 完成旅行规划
+                </a-button>
+                <a-button
+                  block
+                  :loading="isResuming"
+                  :disabled="!reviewFeedback.trim() || isModifying"
+                  @click="handleModifyPlan"
+                >
+                  ✏️ 提交修改意见
+                </a-button>
+              </div>
+            </div>
+
+            <div v-if="isModifying" class="side-thinking-panel">
+              <div class="side-thinking-header">
+                <span>🤖 智能体修改思考过程</span>
+              </div>
+              <div class="side-thinking-body">
+                <a-timeline>
+                  <a-timeline-item
+                    v-for="step in thinkingSteps"
+                    :key="step.id"
+                    :color="getStepColor(step.status)"
+                  >
+                    <div class="thinking-step">
+                      <span class="step-icon">{{ step.icon }}</span>
+                      <span class="step-name">{{ step.display_name }}</span>
+                      <a-spin v-if="step.status === 'running'" size="small" />
+                      <a-tag
+                        v-if="step.status === 'completed'"
+                        color="green"
+                        size="small"
+                        >完成</a-tag
+                      >
+                    </div>
+                    <div
+                      v-if="step.plan_items && step.plan_items.length > 0"
+                      class="step-plan-items"
+                    >
+                      <a-tag
+                        v-for="item in step.plan_items"
+                        :key="item.task"
+                        color="blue"
+                        size="small"
+                      >
+                        {{ item.icon }} {{ item.type_display }}: {{ item.task }}
+                      </a-tag>
+                    </div>
+                  </a-timeline-item>
+                </a-timeline>
+                <div v-if="modifyError" class="thinking-error">
+                  <a-alert :message="modifyError" type="error" show-icon />
+                </div>
+              </div>
+            </div>
+          </div>
         </a-affix>
       </div>
 
       <div class="main-content">
-        <a-card
-          id="map"
-          title="📍 景点地图"
-          :bordered="false"
-          class="map-card"
-        >
+        <a-card id="map" title="📍 景点地图" :bordered="false" class="map-card">
           <div id="amap-container" style="width: 100%; height: 100%"></div>
         </a-card>
 
@@ -355,18 +430,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onBeforeUnmount } from "vue";
+import { ref, onMounted, nextTick, onBeforeUnmount, watch } from "vue";
 import { useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import AMapLoader from "@amap/amap-jsapi-loader";
 import { marked } from "marked";
-import type { TripPlan } from "@/types";
+import type { TripPlan, ThinkingStep } from "@/types";
+import { resumeTripPlanStream } from "@/services/api";
 
 const router = useRouter();
 const tripPlan = ref<TripPlan | null>(null);
 const activeSection = ref("overview");
 const activeDays = ref<number[]>([0]);
 let map: any = null;
+let AMapRef: any = null;
+let mapMarkers: any[] = [];
+let mapPolylines: any[] = [];
+
+const reviewModalVisible = ref(false);
+const reviewFeedback = ref("");
+const isResuming = ref(false);
+const isModifying = ref(false);
+const thinkingSteps = ref<ThinkingStep[]>([]);
+const modifyError = ref<string>("");
 
 onMounted(async () => {
   const data = sessionStorage.getItem("tripPlan");
@@ -374,6 +460,13 @@ onMounted(async () => {
     tripPlan.value = JSON.parse(data);
     await nextTick();
     initMap();
+  }
+
+  const needsReview = sessionStorage.getItem("needsReview");
+  if (needsReview === "true") {
+    setTimeout(() => {
+      reviewModalVisible.value = true;
+    }, 500);
   }
 });
 
@@ -383,6 +476,180 @@ onBeforeUnmount(() => {
     map = null;
   }
 });
+
+watch(tripPlan, async (newPlan) => {
+  if (newPlan && map && AMapRef) {
+    await nextTick();
+    refreshMapMarkers();
+  }
+});
+
+const getStepColor = (status: string): string => {
+  switch (status) {
+    case "completed":
+      return "green";
+    case "running":
+      return "blue";
+    case "failed":
+      return "red";
+    default:
+      return "gray";
+  }
+};
+
+const addThinkingStep = (step: ThinkingStep) => {
+  const existing = thinkingSteps.value.find(
+    (s) => s.node === step.node && step.node !== "execute",
+  );
+  if (existing) {
+    Object.assign(existing, step);
+  } else {
+    thinkingSteps.value.push(step);
+  }
+};
+
+const updateLastStepStatus = (status: "completed" | "failed") => {
+  if (thinkingSteps.value.length > 0) {
+    thinkingSteps.value[thinkingSteps.value.length - 1].status = status;
+  }
+};
+
+const handleCompletePlan = async () => {
+  isResuming.value = true;
+  modifyError.value = "";
+  try {
+    await resumeTripPlanStream(
+      { action: "complete" },
+      {
+        onDone: () => {
+          reviewModalVisible.value = false;
+          isResuming.value = false;
+          sessionStorage.removeItem("needsReview");
+          message.success("旅行规划已完成！");
+        },
+        onError: (data) => {
+          modifyError.value = data.message;
+          isResuming.value = false;
+          message.error(data.message);
+        },
+      },
+    );
+  } catch (error: any) {
+    modifyError.value = error.message || "完成规划失败";
+    isResuming.value = false;
+  }
+};
+
+const handleModifyPlan = async () => {
+  if (!reviewFeedback.value.trim()) return;
+
+  isResuming.value = true;
+  isModifying.value = true;
+  modifyError.value = "";
+  thinkingSteps.value = [];
+
+  const feedback = reviewFeedback.value.trim();
+
+  try {
+    await resumeTripPlanStream(
+      { action: "modify", feedback },
+      {
+        onStart: () => {
+          addThinkingStep({
+            id: `start-${Date.now()}`,
+            node: "start",
+            display_name: "开始修改",
+            icon: "🚀",
+            message: "正在根据您的意见修改旅行计划...",
+            status: "running",
+            timestamp: Date.now(),
+          });
+        },
+        onPlan: (data) => {
+          updateLastStepStatus("completed");
+          addThinkingStep({
+            id: `plan-${Date.now()}`,
+            node: "plan",
+            display_name: data.display_name,
+            icon: data.icon,
+            message: data.message,
+            status: "running",
+            timestamp: Date.now(),
+            plan_items: data.plan_items,
+          });
+        },
+        onExecute: (data) => {
+          updateLastStepStatus("completed");
+          addThinkingStep({
+            id: `execute-${Date.now()}`,
+            node: "execute",
+            display_name: data.task_type_display || data.display_name,
+            icon: data.task_icon || data.icon,
+            message: data.message,
+            status: "running",
+            timestamp: Date.now(),
+            details: data.current_task || undefined,
+          });
+        },
+        onSummarize: (data) => {
+          updateLastStepStatus("completed");
+          addThinkingStep({
+            id: `summarize-${Date.now()}`,
+            node: "summarize",
+            display_name: data.display_name,
+            icon: data.icon,
+            message: data.message,
+            status: "running",
+            timestamp: Date.now(),
+          });
+          if (data.trip_plan) {
+            tripPlan.value = data.trip_plan;
+            sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
+          }
+        },
+        onReview: (data) => {
+          updateLastStepStatus("completed");
+          addThinkingStep({
+            id: `review-${Date.now()}`,
+            node: "user_review",
+            display_name: data.display_name,
+            icon: data.icon,
+            message: data.message,
+            status: "completed",
+            timestamp: Date.now(),
+          });
+          if (data.trip_plan) {
+            tripPlan.value = data.trip_plan;
+            sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
+          }
+          if (!data.user_decision) {
+            isResuming.value = false;
+            isModifying.value = false;
+            setTimeout(() => {
+              reviewModalVisible.value = true;
+            }, 500);
+          }
+        },
+        onDone: () => {
+          updateLastStepStatus("completed");
+          isResuming.value = false;
+          isModifying.value = false;
+          sessionStorage.removeItem("needsReview");
+          message.success("旅行计划修改完成！");
+        },
+        onError: (data) => {
+          updateLastStepStatus("failed");
+          modifyError.value = data.message;
+          isResuming.value = false;
+          message.error(data.message);
+        },
+      },
+    );
+  } catch (error: any) {
+    modifyError.value = error.message || "修改规划失败";
+    isResuming.value = false;
+  }
+};
 
 const goBack = () => {
   router.push("/");
@@ -407,22 +674,10 @@ const getMealLabel = (type: string): string => {
 };
 
 const getAttractionImage = (name: string, index: number): string => {
-  const colors = [
-    "#e6f7ff",
-    "#f6ffed",
-    "#fff7e6",
-    "#fff1f0",
-    "#f9f0ff",
-  ];
+  const colors = ["#e6f7ff", "#f6ffed", "#fff7e6", "#fff1f0", "#f9f0ff"];
   const colorIndex = index % colors.length;
   const bgColor = colors[colorIndex];
-  const textColors = [
-    "#1890ff",
-    "#52c41a",
-    "#fa8c16",
-    "#f5222d",
-    "#722ed1",
-  ];
+  const textColors = ["#1890ff", "#52c41a", "#fa8c16", "#f5222d", "#722ed1"];
   const textColor = textColors[colorIndex];
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">
@@ -450,6 +705,8 @@ const initMap = async () => {
       plugins: ["AMap.Marker", "AMap.Polyline", "AMap.InfoWindow"],
     });
 
+    AMapRef = AMap;
+
     map = new AMap.Map("amap-container", {
       zoom: 12,
       center: [116.397128, 39.916527],
@@ -464,10 +721,21 @@ const initMap = async () => {
   }
 };
 
+const refreshMapMarkers = () => {
+  if (!map || !AMapRef) return;
+
+  map.remove(mapMarkers);
+  map.remove(mapPolylines);
+  mapMarkers = [];
+  mapPolylines = [];
+
+  addAttractionMarkers(AMapRef);
+};
+
 const addAttractionMarkers = (AMap: any) => {
   if (!tripPlan.value) return;
 
-  const markers: any[] = [];
+  const newMarkers: any[] = [];
   const allAttractions: any[] = [];
 
   tripPlan.value.days.forEach((day, dayIndex) => {
@@ -513,13 +781,14 @@ const addAttractionMarkers = (AMap: any) => {
       infoWindow.open(map, marker.getPosition());
     });
 
-    markers.push(marker);
+    newMarkers.push(marker);
   });
 
-  map.add(markers);
+  map.add(newMarkers);
+  mapMarkers = newMarkers;
 
   if (allAttractions.length > 0) {
-    map.setFitView(markers);
+    map.setFitView(newMarkers);
   }
 
   drawRoutes(AMap, allAttractions);
@@ -537,6 +806,7 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
   });
 
   const dayColors = ["#1890ff", "#52c41a", "#faad14", "#f5222d", "#722ed1"];
+  const newPolylines: any[] = [];
 
   Object.entries(dayGroups).forEach(
     ([dayKey, dayAttractions]: [string, any]) => {
@@ -558,8 +828,11 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
       });
 
       map.add(polyline);
+      newPolylines.push(polyline);
     },
   );
+
+  mapPolylines = newPolylines;
 };
 
 const renderMarkdown = (text: string): string => {
@@ -597,7 +870,7 @@ const renderMarkdown = (text: string): string => {
 }
 
 .side-nav {
-  width: 240px;
+  width: 320px;
   flex-shrink: 0;
 }
 
@@ -620,6 +893,97 @@ const renderMarkdown = (text: string): string => {
 
 .side-nav :deep(.ant-menu-item:hover) {
   background: rgba(102, 126, 234, 0.1);
+}
+
+.side-review-panel {
+  margin-top: 16px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.side-review-header {
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.side-review-body {
+  padding: 16px;
+}
+
+.side-review-desc {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.side-review-input {
+  margin-bottom: 12px;
+}
+
+.side-review-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-thinking-panel {
+  margin-top: 16px;
+  margin-left: 8px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 16px;
+}
+
+.side-thinking-header {
+  font-weight: 600;
+  font-size: 13px;
+  color: #333;
+  margin-bottom: 12px;
+}
+
+.side-thinking-body {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.side-thinking-body :deep(.ant-timeline) {
+  font-size: 12px;
+}
+
+.side-thinking-body :deep(.ant-timeline-item-content) {
+  padding-bottom: 8px;
+}
+
+.side-thinking-body .thinking-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.side-thinking-body .step-icon {
+  font-size: 14px;
+}
+
+.side-thinking-body .step-name {
+  font-weight: 500;
+  color: #333;
+}
+
+.side-thinking-body .step-plan-items {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.side-thinking-body .thinking-error {
+  margin-top: 8px;
 }
 
 .main-content {
@@ -1036,7 +1400,7 @@ const renderMarkdown = (text: string): string => {
   .info-section {
     grid-template-columns: 1fr;
   }
-  
+
   .map-card {
     height: 350px;
   }
@@ -1046,27 +1410,27 @@ const renderMarkdown = (text: string): string => {
   .result-container {
     padding: 20px 12px;
   }
-  
+
   .side-nav {
     display: none;
   }
-  
+
   .content-wrapper {
     max-width: 100%;
   }
-  
+
   .attractions-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .budget-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .info-section {
     grid-template-columns: 1fr;
   }
-  
+
   .map-card {
     height: 300px;
   }

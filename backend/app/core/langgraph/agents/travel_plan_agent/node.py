@@ -4,14 +4,17 @@
 - plan_node: 任务规划节点
 - execute_sub_agent_node: 子智能体执行节点
 - summarize_node: 结果总结节点
+- user_review_node: 用户审阅节点（支持多轮对话）
 - should_continue: 路由判断函数
+- route_after_review: 审阅后路由判断函数
 """
 
 import math
 from datetime import datetime, timedelta
 from typing import Literal
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.types import interrupt
 from langchain_qwq import ChatQwen
 
 from app.core.config import settings
@@ -63,12 +66,14 @@ NODE_DISPLAY_NAMES = {
     "plan": "任务规划",
     "execute": "执行子任务",
     "summarize": "生成旅行计划",
+    "user_review": "用户审阅",
 }
 
 NODE_DISPLAY_ICONS = {
     "plan": "🧠",
     "execute": "⚙️",
     "summarize": "📋",
+    "user_review": "👀",
 }
 
 SUB_AGENT_DISPLAY_NAMES = {
@@ -100,28 +105,107 @@ def plan_node(state: TravelPlannerState) -> dict:
     """
     任务规划节点。
     分析用户需求，拆分为具体的子任务。
+    支持首次规划和多轮对话修改模式。
     """
     model = get_plan_model()
     
-    user_message = state.messages[-1].content if state.messages else ""
+    is_modification = state.notes.get("user_decision") == "modify" and bool(state.user_feedback)
     
-    plan_prompt = ChatPromptTemplate.from_messages([
-        ("system", PLAN_MODEL_PROMPT),
-        ("human", "用户需求：{user_request}\n\n请分析并拆分为子任务。"),
-    ])
-    
-    chain = plan_prompt | model.with_structured_output(PlanResult)
-    result = chain.invoke({"user_request": user_message})
-    
-    task_items = [
-        TaskItem(task=task, type=task_type, status="pending", result=None)
-        for task, task_type in zip(result.plan.tasks, result.plan.task_types)
-    ]
-    
-    return {
-        "plan": task_items,
-        "messages": [AIMessage(content=f"已规划 {len(result.plan.tasks)} 个任务：\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(result.plan.tasks)))],
-    }
+    if is_modification:
+        user_feedback = state.user_feedback or ""
+        plan_summary = state.notes.get("plan_summary", "")
+        current_round = state.notes.get("round", 0)
+        
+        trip_info = ""
+        if state.trip_request:
+            trip_info = (
+                f"当前旅行信息：\n"
+                f"- 目的地：{state.trip_request.city}\n"
+                f"- 日期：{state.trip_request.start_date} 至 {state.trip_request.end_date}\n"
+                f"- 天数：{state.trip_request.travel_days}天\n"
+                f"- 交通：{state.trip_request.transportation}\n"
+                f"- 住宿偏好：{state.trip_request.accommodation}\n"
+                f"- 偏好：{', '.join(state.trip_request.preferences) if state.trip_request.preferences else '无'}\n"
+            )
+        
+        completed_tasks = ""
+        if state.sub_agent_results:
+            completed_tasks = "已完成的子任务：\n"
+            for r in state.sub_agent_results:
+                completed_tasks += f"- [{r.type}] {r.task}\n"
+        
+        plan_prompt = ChatPromptTemplate.from_messages([
+            ("system", PLAN_MODEL_PROMPT),
+            ("human", """这是对已有旅行计划的修改请求，请根据修改意见生成需要重新执行的完整任务。
+
+{trip_info}
+
+{completed_tasks}
+
+当前旅行计划摘要：
+{plan_summary}
+
+用户修改意见：{user_feedback}
+
+请分析用户修改意见，仅生成因修改而需要重新执行的完整任务。"""),
+        ])
+        
+        chain = plan_prompt | model.with_structured_output(PlanResult)
+        result = chain.invoke({
+            "trip_info": trip_info,
+            "completed_tasks": completed_tasks,
+            "plan_summary": plan_summary,
+            "user_feedback": user_feedback,
+        })
+        
+        task_items = [
+            TaskItem(task=task, type=task_type, status="pending", result=None)
+            for task, task_type in zip(result.plan.tasks, result.plan.task_types)
+        ]
+        
+        update = {
+            "plan": state.plan + task_items,
+            "messages": [AIMessage(content=f"根据修改意见，新增 {len(task_items)} 个任务：\n" + "\n".join(f"- {t.task}" for t in task_items))],
+            "notes": {**state.notes, "round": current_round + 1},
+            "user_feedback": None,
+        }
+        
+        if result.updated_end_date and state.trip_request:
+            updated_request = state.trip_request.model_copy(update={
+                "end_date": result.updated_end_date,
+            })
+            if result.updated_travel_days:
+                updated_request = updated_request.model_copy(update={
+                    "travel_days": result.updated_travel_days,
+                })
+            update["trip_request"] = updated_request
+        elif result.updated_travel_days and state.trip_request:
+            updated_request = state.trip_request.model_copy(update={
+                "travel_days": result.updated_travel_days,
+            })
+            update["trip_request"] = updated_request
+        
+        return update
+    else:
+        user_message = state.messages[-1].content if state.messages else ""
+        
+        plan_prompt = ChatPromptTemplate.from_messages([
+            ("system", PLAN_MODEL_PROMPT),
+            ("human", "用户需求：{user_request}\n\n请分析并拆分为子任务。"),
+        ])
+        
+        chain = plan_prompt | model.with_structured_output(PlanResult)
+        result = chain.invoke({"user_request": user_message})
+        
+        task_items = [
+            TaskItem(task=task, type=task_type, status="pending", result=None)
+            for task, task_type in zip(result.plan.tasks, result.plan.task_types)
+        ]
+        
+        return {
+            "plan": task_items,
+            "messages": [AIMessage(content=f"已规划 {len(result.plan.tasks)} 个任务：\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(result.plan.tasks)))],
+        }
 
 
 async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
@@ -410,10 +494,8 @@ def summarize_node(state: TravelPlannerState) -> dict:
     return {
         "trip_plan": trip_plan,
         "messages": [AIMessage(content=result.content)],
+        "notes": {**state.notes, "plan_summary": result.content[:800] if result.content else ""},
     }
-
-
-# ========== 路由函数 ==========
 
 def should_continue(state: TravelPlannerState) -> Literal["execute", "summarize"]:
     """判断是否还有待执行的任务"""
@@ -421,3 +503,39 @@ def should_continue(state: TravelPlannerState) -> Literal["execute", "summarize"
         if task_item.status == "pending":
             return "execute"
     return "summarize"
+
+
+def user_review_node(state: TravelPlannerState) -> dict:
+    """
+    用户审阅节点。
+    使用interrupt暂停图执行，等待用户审阅旅行计划并提供反馈。
+    当图通过Command(resume=...)恢复时，interrupt返回用户的反馈信息。
+    """
+    trip_plan_data = None
+    if state.trip_plan:
+        trip_plan_data = state.trip_plan.model_dump()
+
+    user_response = interrupt({
+        "message": "请审阅旅行计划，您可以选择完成规划或提出修改意见",
+        "trip_plan": trip_plan_data,
+    })
+
+    if user_response.get("action") == "complete":
+        return {
+            "notes": {**state.notes, "user_decision": "complete"},
+            "messages": [AIMessage(content="用户确认完成旅行规划")],
+        }
+    else:
+        feedback = user_response.get("feedback", "")
+        return {
+            "notes": {**state.notes, "user_decision": "modify"},
+            "user_feedback": feedback,
+            "messages": [HumanMessage(content=f"用户修改意见：{feedback}")],
+        }
+
+
+def route_after_review(state: TravelPlannerState) -> Literal["plan", "__end__"]:
+    """审阅后路由判断：用户选择完成则结束，选择修改则回到规划节点"""
+    if state.notes.get("user_decision") == "complete":
+        return "__end__"
+    return "plan"

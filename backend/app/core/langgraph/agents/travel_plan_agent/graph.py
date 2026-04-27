@@ -4,13 +4,17 @@
 1. 任务规划：分析用户需求，拆分为子任务
 2. 子智能体调用：委派任务给专门的子智能体执行
 3. 结果总结：汇总所有子任务结果，生成最终旅游规划
-4. 长期记忆：存储和检索历史规划请求
+4. 用户审阅：支持多轮对话，用户可修改旅行计划
+5. 长期记忆：存储和检索历史规划请求
 """
 
 from urllib.parse import quote_plus
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.types import Command
 from psycopg_pool import AsyncConnectionPool
 
 from app.schemas import (
@@ -25,7 +29,9 @@ from .node import (
     plan_node,
     execute_sub_agent_node,
     summarize_node,
+    user_review_node,
     should_continue,
+    route_after_review,
     NODE_DISPLAY_NAMES,
 )
 from .travel_memory import TravelMemoryManager
@@ -46,11 +52,13 @@ langfuse = Langfuse(
 # 旅游记忆管理器（全局单例）
 _travel_memory_manager: TravelMemoryManager = None
 _connection_pool: AsyncConnectionPool = None
+_checkpointer: AsyncPostgresSaver = None
+_compiled_graph = None
 
 
 async def _get_memory_manager() -> TravelMemoryManager:
     """获取或创建旅游记忆管理器实例。"""
-    global _travel_memory_manager, _connection_pool
+    global _travel_memory_manager, _connection_pool, _checkpointer
     
     if _travel_memory_manager is None:
         try:
@@ -85,6 +93,86 @@ async def _get_memory_manager() -> TravelMemoryManager:
     return _travel_memory_manager
 
 
+async def _get_checkpointer() -> AsyncPostgresSaver:
+    """获取或创建AsyncPostgresSaver检查点器实例。"""
+    global _checkpointer, _connection_pool
+    
+    if _checkpointer is None:
+        try:
+            if _connection_pool is None:
+                connection_url = (
+                    "postgresql://"
+                    f"{quote_plus(settings.POSTGRES_USER)}:{quote_plus(settings.POSTGRES_PASSWORD)}"
+                    f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+                )
+                
+                _connection_pool = AsyncConnectionPool(
+                    connection_url,
+                    open=False,
+                    max_size=settings.POSTGRES_POOL_SIZE,
+                    kwargs={
+                        "autocommit": True,
+                        "connect_timeout": 5,
+                        "prepare_threshold": None,
+                    },
+                )
+                await _connection_pool.open()
+                logger.info("旅游规划连接池创建成功（检查点器）")
+            
+            serde = JsonPlusSerializer(allowed_msgpack_modules={
+                ("app.schemas.agent.state", "TaskItem"),
+                ("app.schemas.agent.state", "SubAgentResult"),
+                ("app.schemas.travel.components", "Attraction"),
+                ("app.schemas.travel.components", "Hotel"),
+                ("app.schemas.travel.components", "Meal"),
+                ("app.schemas.travel.components", "Budget"),
+                ("app.schemas.travel.components", "DayPlan"),
+                ("app.schemas.travel.request", "TripRequest"),
+                ("app.schemas.travel.request", "POISearchRequest"),
+                ("app.schemas.travel.request", "RouteRequest"),
+                ("app.schemas.travel.plan", "TaskPlan"),
+                ("app.schemas.travel.plan", "PlanResult"),
+                ("app.schemas.travel.plan", "TripPlan"),
+                ("app.schemas.travel.plan", "TripPlanResponse"),
+                ("app.schemas.weather.qweather", "LocationInfo"),
+                ("app.schemas.weather.qweather", "QWeatherInfo"),
+                ("app.schemas.weather.qweather", "AirQualityInfo"),
+                ("app.schemas.weather.qweather", "TravelWeatherData"),
+                ("app.schemas.common.location", "Location"),
+                ("app.schemas.agent.travel_state", "TravelPlannerState"),
+                ("app.schemas.agent.travel_state", "TravelPlannerOutput"),
+                ("app.schemas.agent.context", "AgentContext"),
+                ("app.schemas.agent.context", "TravelContext"),
+                ("langchain_core.messages", "AIMessage"),
+                ("langchain_core.messages", "HumanMessage"),
+                ("langchain_core.messages", "BaseMessage"),
+                ("langchain_core.messages", "ToolMessage"),
+                ("langchain_core.messages", "SystemMessage"),
+            })
+            
+            _checkpointer = AsyncPostgresSaver(_connection_pool, serde=serde)
+            await _checkpointer.setup()
+            logger.info("AsyncPostgresSaver检查点器初始化成功")
+            
+        except Exception as e:
+            logger.error("AsyncPostgresSaver检查点器初始化失败", error=str(e), exc_info=True)
+            _checkpointer = None
+    
+    return _checkpointer
+
+
+async def _get_compiled_graph():
+    """获取或创建带检查点器的编译图实例。"""
+    global _compiled_graph
+    
+    if _compiled_graph is None:
+        checkpointer = await _get_checkpointer()
+        _compiled_graph = build_travel_planner_graph(checkpointer=checkpointer)
+        logger.info("旅游规划编译图初始化成功（带检查点器）")
+    
+    return _compiled_graph
+
+
 async def _cleanup_resources(wait_for_tasks: bool = True, timeout: float = 3.0) -> None:
     """清理全局资源，关闭连接池并等待后台任务完成。
     
@@ -92,7 +180,10 @@ async def _cleanup_resources(wait_for_tasks: bool = True, timeout: float = 3.0) 
         wait_for_tasks: 是否等待后台任务完成（一次性脚本建议 True，Web 应用建议 False）
         timeout: 等待后台任务的超时时间（秒）
     """
-    global _connection_pool, _travel_memory_manager
+    global _connection_pool, _travel_memory_manager, _checkpointer, _compiled_graph
+    
+    _compiled_graph = None
+    _checkpointer = None
     
     # 1. 先关闭连接池（这会优雅地停止所有 worker 任务）
     if _connection_pool is not None:
@@ -153,24 +244,25 @@ async def _wait_for_background_tasks(timeout: float = 5.0) -> None:
     except Exception as e:
         logger.error("等待后台任务时发生错误", error=str(e))
 
-def build_travel_planner_graph():
-    """构建旅游规划工作流图。"""
+def build_travel_planner_graph(checkpointer=None):
+    """构建旅游规划工作流图。
+    
+    Args:
+        checkpointer: 可选的检查点器实例，用于持久化对话状态
+    """
     graph = StateGraph(
         state_schema=TravelPlannerState,
         context_schema=TravelContext,
-        # input_schema默认为state_schema
         output_schema=TravelPlannerOutput,
     )
     
-    # 添加节点
     graph.add_node("plan", plan_node)
     graph.add_node("execute", execute_sub_agent_node)
     graph.add_node("summarize", summarize_node)
+    graph.add_node("user_review", user_review_node)
     
-    # 设置入口
     graph.set_entry_point("plan")
     
-    # 添加边
     graph.add_edge("plan", "execute")
     graph.add_conditional_edges(
         "execute",
@@ -180,9 +272,21 @@ def build_travel_planner_graph():
             "summarize": "summarize",
         },
     )
-    graph.add_edge("summarize", END)
+    graph.add_edge("summarize", "user_review")
+    graph.add_conditional_edges(
+        "user_review",
+        route_after_review,
+        {
+            "plan": "plan",
+            "__end__": END,
+        },
+    )
     
-    return graph.compile()
+    compile_kwargs = {}
+    if checkpointer:
+        compile_kwargs["checkpointer"] = checkpointer
+    
+    return graph.compile(**compile_kwargs)
 
 
 async def run_travel_planner(
@@ -305,16 +409,17 @@ async def stream_travel_planner(
 ):
     """
     流式运行旅游规划智能体，逐步yield各节点的状态更新。
+    使用AsyncPostgresSaver检查点器持久化对话状态，支持多轮对话。
     
     Args:
         request: 旅行请求
-        session_id: 会话ID
+        session_id: 会话ID（同时作为thread_id用于检查点）
         user_id: 用户ID
     
     Yields:
         dict: 每个节点执行后的状态更新事件
     """
-    graph = build_travel_planner_graph()
+    graph = await _get_compiled_graph()
     
     historical_context = ""
     try:
@@ -339,6 +444,7 @@ async def stream_travel_planner(
         "current_task": None,
         "trip_plan": None,
         "notes": {},
+        "user_feedback": None,
     }
     
     context = TravelContext(
@@ -357,11 +463,17 @@ async def stream_travel_planner(
         "debug": str(settings.DEBUG).lower(),
     }
 
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": [CallbackHandler()],
+    }
+
     with propagate_attributes(**trace_attributes):
         async for event in graph.astream(
             initial_state,
             context=context.model_dump(),
-            config={"callbacks": [CallbackHandler()], "stream_mode": "updates"},
+            config=config,
+            stream_mode="updates",
         ):
             yield event
     
@@ -373,6 +485,81 @@ async def stream_travel_planner(
             logger.info("规划请求已保存到长期记忆", user_id=user_id, session_id=session_id)
     except Exception as e:
         logger.warning("保存规划请求失败", error=str(e))
+
+
+async def resume_travel_planner(
+    session_id: str,
+    user_id: str = "default_user",
+    resume_value: dict = None,
+):
+    """
+    恢复被interrupt暂停的旅游规划图，继续执行。
+    
+    Args:
+        session_id: 会话ID（同时作为thread_id用于检查点）
+        user_id: 用户ID
+        resume_value: 传递给interrupt的恢复值，格式: {"action": "complete"/"modify", "feedback": "..."}
+    
+    Yields:
+        dict: 每个节点执行后的状态更新事件
+    """
+    graph = await _get_compiled_graph()
+    
+    context = TravelContext(
+        user_id=user_id,
+        session_id=session_id,
+    )
+    
+    safe_user_id = str(user_id) if user_id is not None else None
+    trace_attributes = {}
+    if user_id:
+        trace_attributes["user_id"] = safe_user_id
+    if session_id:
+        trace_attributes["session_id"] = session_id
+    trace_attributes["metadata"] = {
+        "environment": settings.ENVIRONMENT.value,
+        "debug": str(settings.DEBUG).lower(),
+    }
+
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": [CallbackHandler()],
+    }
+
+    with propagate_attributes(**trace_attributes):
+        async for event in graph.astream(
+            Command(resume=resume_value),
+            context=context.model_dump(),
+            config=config,
+            stream_mode="updates",
+        ):
+            yield event
+
+
+async def get_graph_interrupt_state(session_id: str) -> dict | None:
+    """
+    获取图的当前中断状态，用于判断图是否在user_review节点被中断。
+    
+    Args:
+        session_id: 会话ID
+    
+    Returns:
+        中断信息字典，如果没有中断则返回None
+    """
+    graph = await _get_compiled_graph()
+    config = {"configurable": {"thread_id": session_id}}
+    
+    try:
+        state = await graph.aget_state(config)
+        if state.tasks:
+            for task in state.tasks:
+                if task.interrupts:
+                    interrupt_value = task.interrupts[0].value
+                    return interrupt_value
+        return None
+    except Exception as e:
+        logger.error("获取图中断状态失败", error=str(e), session_id=session_id)
+        return None
 
 
 def run_travel_planner_sync(

@@ -254,8 +254,21 @@
 import { ref, reactive, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { message } from "ant-design-vue";
-import { generateTripPlan, generateTripPlanStream, createSession, getSessions } from "@/services/api";
-import type { TripFormData, SessionResponse, ThinkingStep, SSEPlanEvent, SSEExecuteEvent, SSESummarizeEvent } from "@/types";
+import {
+  generateTripPlan,
+  generateTripPlanStream,
+  createSession,
+  getSessions,
+} from "@/services/api";
+import type {
+  TripFormData,
+  SessionResponse,
+  ThinkingStep,
+  SSEPlanEvent,
+  SSEExecuteEvent,
+  SSESummarizeEvent,
+  SSEReviewEvent,
+} from "@/types";
 import type { Dayjs } from "dayjs";
 import SessionSidebar from "@/components/SessionSidebar.vue";
 import ThinkingProcess from "@/components/ThinkingProcess.vue";
@@ -400,28 +413,68 @@ const handleSubmitStream = async (requestData: TripFormData) => {
       onPlan: (data: SSEPlanEvent) => {
         loadingStatus.value = data.message;
         completeCurrentStep();
-        addThinkingStep(data.node, data.display_name, data.icon, data.message, "running", undefined, data.plan_items);
+        addThinkingStep(
+          data.node,
+          data.display_name,
+          data.icon,
+          data.message,
+          "running",
+          undefined,
+          data.plan_items,
+        );
       },
       onExecute: (data: SSEExecuteEvent) => {
         loadingStatus.value = data.message;
         const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
-        if (lastStep && lastStep.node === "execute" && lastStep.status === "running") {
+        if (
+          lastStep &&
+          lastStep.node === "execute" &&
+          lastStep.status === "running"
+        ) {
           lastStep.message = data.message;
           lastStep.details = data.current_task || undefined;
         } else {
           completeCurrentStep();
-          addThinkingStep(data.node, data.display_name, data.icon, data.message, "running", data.current_task || undefined);
+          addThinkingStep(
+            data.node,
+            data.display_name,
+            data.icon,
+            data.message,
+            "running",
+            data.current_task || undefined,
+          );
         }
         loadingProgress.value = Math.min(90, loadingProgress.value + 15);
       },
       onSummarize: (data: SSESummarizeEvent) => {
         loadingStatus.value = data.message;
         completeCurrentStep();
-        addThinkingStep(data.node, data.display_name, data.icon, data.message, "running");
+        addThinkingStep(
+          data.node,
+          data.display_name,
+          data.icon,
+          data.message,
+          "running",
+        );
         loadingProgress.value = 95;
         if (data.trip_plan) {
           sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
         }
+      },
+      onReview: (data: SSEReviewEvent) => {
+        completeCurrentStep();
+        isThinkingRunning.value = false;
+        loadingProgress.value = 100;
+        loadingStatus.value = "等待用户审阅";
+        if (data.trip_plan) {
+          sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
+        }
+        sessionStorage.setItem("needsReview", "true");
+        message.success("旅行计划已生成，请审阅！");
+        setTimeout(() => {
+          loading.value = false;
+          router.push("/result");
+        }, 800);
       },
       onDone: (data) => {
         completeCurrentStep();
@@ -429,10 +482,14 @@ const handleSubmitStream = async (requestData: TripFormData) => {
         loadingProgress.value = 100;
         loadingStatus.value = data.message;
         message.success("旅行计划生成成功!");
-        setTimeout(() => {
+        if (!sessionStorage.getItem("needsReview")) {
+          setTimeout(() => {
+            loading.value = false;
+            router.push("/result");
+          }, 800);
+        } else {
           loading.value = false;
-          router.push("/result");
-        }, 800);
+        }
       },
       onError: (data) => {
         hasThinkingError.value = true;
@@ -462,7 +519,10 @@ const handleSubmitStream = async (requestData: TripFormData) => {
   }
 };
 
-const handleSubmitNonStream = async (requestData: TripFormData, session: SessionResponse) => {
+const handleSubmitNonStream = async (
+  requestData: TripFormData,
+  session: SessionResponse,
+) => {
   const progressInterval = setInterval(() => {
     if (loadingProgress.value < 90) {
       loadingProgress.value += 10;

@@ -19,7 +19,8 @@ class TravelPlannerState(BaseModel):
     attraction_pool: List[Attraction] = Field(default_factory=list, description="景点池：存储所有搜索到的景点，等待分配到各天")
     hotel_pool: List[Hotel] = Field(default_factory=list, description="酒店池：存储所有搜索到的酒店，等待分配")
     trip_plan: Optional[TripPlan] = Field(default=None, description="生成的旅行计划")
-    notes: dict = Field(default_factory=dict, description="备注信息")
+    notes: dict = Field(default_factory=dict, description="备注信息，包含user_decision/user_feedback/plan_summary/round等")
+    user_feedback: Optional[str] = Field(default=None, description="用户审阅反馈意见")
 
     class Config:
         arbitrary_types_allowed = True

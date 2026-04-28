@@ -343,9 +343,9 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
 def summarize_node(state: TravelPlannerState) -> dict:
     """
     总结节点。
-    汇总所有子任务结果，生成最终旅游规划。
+    使用 LLM 智能选择景点和酒店，生成最终旅游规划。
+    可以理解用户反馈，做出合理的选择。
     """
-    
     model = get_summary_model()
     
     sub_agent_results = state.sub_agent_results
@@ -353,148 +353,74 @@ def summarize_node(state: TravelPlannerState) -> dict:
     user_request = state.messages[0].content if state.messages else ""
     attraction_pool = state.attraction_pool
     hotel_pool = state.hotel_pool
+    user_feedback = state.user_feedback
+    is_modification = state.notes.get("user_decision") == "modify"
+    weather_info = state.trip_plan.weather_info if state.trip_plan else None
     
-    # ========== 步骤1：先完成景点和酒店的分配 ==========
-    days = []
-    selected_hotel = None
-    sorted_attractions = []
+    if not trip_request:
+        return {
+            "trip_plan": None,
+            "messages": [AIMessage(content="缺少旅行请求信息")],
+        }
     
-    if trip_request:
-        try:
-            start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
-            travel_days = trip_request.travel_days
-            
-            # 按评分排序景点（从高到低）
-            sorted_attractions = sorted(
-                attraction_pool,
-                key=lambda x: x.rating if x.rating else 0,
-                reverse=True
-            )
-            
-            # 计算每天的景点数量（2-3个）
-            total_attractions = len(sorted_attractions)
-            if total_attractions > 0:
-                attractions_per_day = min(3, max(2, math.ceil(total_attractions / travel_days)))
-            else:
-                attractions_per_day = 0
-            
-            # 选择评分最高的酒店
-            if hotel_pool:
-                sorted_hotels = sorted(
-                    hotel_pool,
-                    key=lambda x: x.rating if x.rating else 0,
-                    reverse=True
-                )
-                selected_hotel = sorted_hotels[0] if sorted_hotels else None
-            
-            # 为每天分配景点
-            for day_idx in range(travel_days):
-                start_idx = day_idx * attractions_per_day
-                end_idx = min(start_idx + attractions_per_day, len(sorted_attractions))
-                day_attractions = sorted_attractions[start_idx:end_idx]
-                
-                date_str = (start_date + timedelta(days=day_idx)).strftime("%Y-%m-%d")
-                
-                # 生成当天行程描述
-                if day_attractions:
-                    attraction_names = ", ".join([a.name for a in day_attractions])
-                    description = f"第{day_idx + 1}天：游览{attraction_names}"
-                else:
-                    description = f"第{day_idx + 1}天：自由活动"
-                
-                day_plan = DayPlan(
-                    date=date_str,
-                    day_index=day_idx,
-                    description=description,
-                    transportation=trip_request.transportation,
-                    accommodation=trip_request.accommodation,
-                    hotel=selected_hotel,
-                    attractions=day_attractions,
-                    meals=[],
-                )
-                days.append(day_plan)
-            
-            if sorted_attractions:
-                logger.info(f"已将 {len(sorted_attractions)} 个景点分配到 {travel_days} 天的行程中")
-            if selected_hotel:
-                logger.info(f"已选择酒店: {selected_hotel.name} (评分: {selected_hotel.rating})")
-        except Exception as e:
-            logger.error(f"分配景点和酒店到各天失败: {e}")
-            import traceback
-            traceback.print_exc()
+    start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
+    travel_days = trip_request.travel_days
     
-    # ========== 步骤2：构建分配结果的文本描述 ==========
-    allocation_text = ""
-    if days:
-        allocation_text = "\n\n**已分配的行程安排：**\n\n"
-        for day in days:
-            allocation_text += f"**第{day.day_index + 1}天 ({day.date})：**\n"
-            if day.attractions:
-                for i, attraction in enumerate(day.attractions, 1):
-                    allocation_text += f"  {i}. {attraction.name}"
-                    if attraction.rating:
-                        allocation_text += f" (评分: {attraction.rating})"
-                    if attraction.ticket_price:
-                        allocation_text += f" - 门票: {attraction.ticket_price}元"
-                    allocation_text += "\n"
-            else:
-                allocation_text += "  暂无景点安排\n"
-            allocation_text += "\n"
-        
-        if selected_hotel:
-            allocation_text += f"**推荐酒店：**{selected_hotel.name}"
-            if selected_hotel.rating:
-                allocation_text += f" (评分: {selected_hotel.rating})"
-            if selected_hotel.address:
-                allocation_text += f"\n地址：{selected_hotel.address}"
-            allocation_text += "\n"
+    attractions_info = _format_attractions_for_selection(attraction_pool)
+    hotels_info = _format_hotels_for_selection(hotel_pool)
     
-    # ========== 步骤3：将分配结果传递给 AI 生成文本 ==========
-    results_text = "\n\n".join([
-        f"### {r.task}\n{r.result}"
-        for r in sub_agent_results
+    current_plan_info = ""
+    if is_modification and state.trip_plan:
+        current_plan_info = _format_current_plan(state.trip_plan)
+    
+    selection_prompt = _build_selection_prompt(
+        user_request=user_request,
+        user_feedback=user_feedback,
+        is_modification=is_modification,
+        attractions_info=attractions_info,
+        hotels_info=hotels_info,
+        current_plan_info=current_plan_info,
+        travel_days=travel_days,
+        start_date=start_date,
+        trip_request=trip_request,
+    )
+    
+    from app.schemas.travel.selection import DayPlanSelection
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SELECTION_PROMPT),
+        ("human", "{selection_prompt}"),
     ])
     
-    summary_prompt = ChatPromptTemplate.from_messages([
-        ("system", SUMMARY_PROMPT),
-        ("human", """用户需求：{user_request}
-
-子任务执行结果：
-{results}
-
-{allocation}
-
-请根据以上分配结果，生成完整的旅游规划文本描述。"""),
-    ])
+    chain = prompt | model.with_structured_output(DayPlanSelection)
+    selection_result = chain.invoke({"selection_prompt": selection_prompt})
     
-    chain = summary_prompt | model
-    result = chain.invoke({
-        "user_request": user_request,
-        "results": results_text,
-        "allocation": allocation_text,
-    })
-
-    # ========== 步骤4：构建最终的 TripPlan ==========
-    if state.trip_plan:
-        trip_plan = state.trip_plan.model_copy(update={
-            "days": days,
-            "overall_suggestions": result.content
-        })
-    else:
-        trip_plan = TripPlan(
-            city=trip_request.city if trip_request else "",
-            start_date=trip_request.start_date if trip_request else "",
-            end_date=trip_request.end_date if trip_request else "",
-            days=days,
-            weather_info=None,
-            overall_suggestions=result.content,
-            budget=None,
-        )
-
+    trip_plan = _build_trip_plan_from_selection(
+        selection_result=selection_result,
+        attraction_pool=attraction_pool,
+        hotel_pool=hotel_pool,
+        trip_request=trip_request,
+        start_date=start_date,
+        travel_days=travel_days,
+        weather_info=weather_info,
+    )
+    
+    detailed_description = _generate_detailed_description(
+        trip_plan=trip_plan,
+        sub_agent_results=sub_agent_results,
+        user_request=user_request,
+        model=model,
+    )
+    
+    trip_plan.overall_suggestions = detailed_description
+    
     return {
         "trip_plan": trip_plan,
-        "messages": [AIMessage(content=result.content)],
-        "notes": {**state.notes, "plan_summary": result.content[:800] if result.content else ""},
+        "messages": [AIMessage(content=detailed_description)],
+        "notes": {
+            **state.notes,
+            "plan_summary": detailed_description[:800] if detailed_description else "",
+        },
     }
 
 def should_continue(state: TravelPlannerState) -> Literal["execute", "summarize"]:
@@ -539,3 +465,288 @@ def route_after_review(state: TravelPlannerState) -> Literal["plan", "__end__"]:
     if state.notes.get("user_decision") == "complete":
         return "__end__"
     return "plan"
+
+
+def _format_attractions_for_selection(attractions: list) -> str:
+    """格式化景点信息供 LLM 选择"""
+    if not attractions:
+        return "暂无可用景点"
+    
+    info_lines = ["可选景点列表：\n"]
+    for i, attr in enumerate(attractions, 1):
+        info_lines.append(
+            f"{i}. {attr.name}\n"
+            f"   - 评分: {attr.rating or '暂无'}\n"
+            f"   - 门票: {attr.ticket_price}元\n"
+            f"   - 类型: {attr.type or '未知'}\n"
+            f"   - 地址: {attr.address}\n"
+            f"   - 开放时间: {attr.open_time or '未知'}\n"
+            f"   - 描述: {attr.description or '暂无'}\n"
+        )
+    
+    return "\n".join(info_lines)
+
+
+def _format_hotels_for_selection(hotels: list) -> str:
+    """格式化酒店信息供 LLM 选择"""
+    if not hotels:
+        return "暂无可用酒店"
+    
+    info_lines = ["可选酒店列表：\n"]
+    for i, hotel in enumerate(hotels, 1):
+        info_lines.append(
+            f"{i}. {hotel.name}\n"
+            f"   - 评分: {hotel.rating or '暂无'}\n"
+            f"   - 价格: {hotel.lowest_price or '未知'}元/晚\n"
+            f"   - 类型: {hotel.hotel_type or '未知'}\n"
+            f"   - 商圈: {hotel.business_area or '未知'}\n"
+            f"   - 地址: {hotel.address}\n"
+        )
+    
+    return "\n".join(info_lines)
+
+
+def _format_current_plan(trip_plan) -> str:
+    """格式化当前行程供修改参考"""
+    info_lines = ["当前行程安排：\n"]
+    
+    for day in trip_plan.days:
+        info_lines.append(f"第{day.day_index + 1}天 ({day.date})：")
+        if day.attractions:
+            for attr in day.attractions:
+                info_lines.append(f"  - {attr.name}")
+        if day.hotel:
+            info_lines.append(f"  住宿: {day.hotel.name}")
+        info_lines.append("")
+    
+    return "\n".join(info_lines)
+
+
+def _build_selection_prompt(
+    user_request: str,
+    user_feedback: str,
+    is_modification: bool,
+    attractions_info: str,
+    hotels_info: str,
+    current_plan_info: str,
+    travel_days: int,
+    start_date,
+    trip_request,
+) -> str:
+    """构建景点/酒店选择的 prompt"""
+    
+    prompt_parts = [f"用户原始需求：\n{user_request}\n"]
+    
+    if is_modification and user_feedback:
+        prompt_parts.append(f"\n用户修改意见：\n{user_feedback}\n")
+        prompt_parts.append(f"\n{current_plan_info}\n")
+        prompt_parts.append("\n请根据用户修改意见，调整景点和酒店的选择。\n")
+    
+    prompt_parts.append(f"\n行程天数：{travel_days}天")
+    prompt_parts.append(f"出发日期：{start_date.strftime('%Y-%m-%d')}")
+    prompt_parts.append(f"交通方式：{trip_request.transportation}")
+    prompt_parts.append(f"住宿偏好：{trip_request.accommodation}")
+    
+    if trip_request.preferences:
+        prompt_parts.append(f"旅行偏好：{', '.join(trip_request.preferences)}")
+    
+    prompt_parts.append(f"\n{attractions_info}\n")
+    prompt_parts.append(f"\n{hotels_info}\n")
+    
+    prompt_parts.append("\n请根据以上信息，为每天选择合适的景点和酒店。")
+    prompt_parts.append("选择时请考虑：")
+    prompt_parts.append("1. 用户的需求和偏好")
+    if is_modification:
+        prompt_parts.append("2. 用户的修改意见（如果有）")
+    prompt_parts.append("3. 景点的评分、类型、门票价格")
+    prompt_parts.append("4. 行程的合理性（每天2-3个景点）")
+    prompt_parts.append("5. 酒店的位置、价格、评分")
+    
+    return "\n".join(prompt_parts)
+
+
+def _build_trip_plan_from_selection(
+    selection_result,
+    attraction_pool: list,
+    hotel_pool: list,
+    trip_request,
+    start_date,
+    travel_days: int,
+    weather_info: dict,
+):
+    """根据 LLM 的选择结果构建 TripPlan"""
+    
+    days = []
+    
+    attraction_map = {attr.name: attr for attr in attraction_pool}
+    hotel_map = {hotel.name: hotel for hotel in hotel_pool}
+    
+    for day_selection in selection_result.days:
+        selected_attractions = []
+        for attr_name in day_selection.selected_attraction_names:
+            if attr_name in attraction_map:
+                selected_attractions.append(attraction_map[attr_name])
+        
+        date_str = (start_date + timedelta(days=day_selection.day_index)).strftime("%Y-%m-%d")
+        
+        description = f"第{day_selection.day_index + 1}天"
+        if selected_attractions:
+            description += f"：游览{', '.join([a.name for a in selected_attractions])}"
+        
+        selected_hotel = None
+        if selection_result.hotel and selection_result.hotel.selected_hotel_name:
+            hotel_name = selection_result.hotel.selected_hotel_name
+            if hotel_name in hotel_map:
+                selected_hotel = hotel_map[hotel_name]
+        
+        day_plan = DayPlan(
+            date=date_str,
+            day_index=day_selection.day_index,
+            description=description,
+            transportation=trip_request.transportation,
+            accommodation=trip_request.accommodation,
+            hotel=selected_hotel,
+            attractions=selected_attractions,
+            meals=[],
+        )
+        days.append(day_plan)
+    
+    trip_plan = TripPlan(
+        city=trip_request.city,
+        start_date=trip_request.start_date,
+        end_date=trip_request.end_date,
+        days=days,
+        weather_info=weather_info,
+        overall_suggestions=selection_result.overall_suggestions,
+        budget=None,
+    )
+    
+    return trip_plan
+
+
+SELECTION_PROMPT = """你是一个专业的旅游规划师，负责根据用户需求选择合适的景点和酒店。
+
+你的任务：
+1. 分析用户的原始需求和偏好
+2. 如果有用户修改意见，理解用户的意图（例如："换一个景点"、"不喜欢这个酒店"）
+3. 从可选景点和酒店中，选择最合适的组合
+4. 为每天分配2-3个景点，确保行程合理
+5. 选择一个合适的酒店（如果需要住宿）
+
+选择原则：
+- 优先满足用户的明确需求
+- 考虑景点的评分、类型、门票价格
+- 考虑酒店的位置、价格、评分
+- 确保行程的合理性（避免过于拥挤或松散）
+- 如果用户表达不满，避免选择用户不满意的景点/酒店
+
+输出格式：
+- days: 每天的景点选择（包含日期、景点名称列表、选择理由）
+- hotel: 酒店选择（包含酒店名称、选择理由）
+- overall_suggestions: 整体建议和说明
+
+请根据用户需求，做出合理的选择。"""
+
+
+def _generate_detailed_description(
+    trip_plan,
+    sub_agent_results: list,
+    user_request: str,
+    model,
+) -> str:
+    """使用 SUMMARY_PROMPT 生成详细的旅游规划文本
+    
+    Args:
+        trip_plan: 生成的旅行计划
+        sub_agent_results: 子智能体执行结果
+        user_request: 用户原始请求
+        model: LLM 模型实例
+        
+    Returns:
+        详细的旅游规划文本
+    """
+    from app.core.prompts import SUMMARY_PROMPT
+    
+    allocation_text = _format_trip_plan_for_summary(trip_plan)
+    
+    weather_text = ""
+    for result in sub_agent_results:
+        if result.type == "weather":
+            weather_text = f"\n### 天气查询结果\n{result.result}\n"
+            break
+    
+    results_text = "\n\n".join([
+        f"### {r.task}\n{r.result}"
+        for r in sub_agent_results
+        if r.type != "weather"
+    ])
+    
+    summary_prompt = ChatPromptTemplate.from_messages([
+        ("system", SUMMARY_PROMPT),
+        ("human", """用户需求：{user_request}
+
+子任务执行结果：
+{results}
+
+{weather}
+
+已分配的行程安排：
+{allocation}
+
+请根据以上分配结果，生成完整的旅游规划文本描述。"""),
+    ])
+    
+    chain = summary_prompt | model
+    result = chain.invoke({
+        "user_request": user_request,
+        "results": results_text,
+        "weather": weather_text,
+        "allocation": allocation_text,
+    })
+    
+    return result.content
+
+
+def _format_trip_plan_for_summary(trip_plan) -> str:
+    """格式化 TripPlan 供 SUMMARY_PROMPT 使用
+    
+    Args:
+        trip_plan: 旅行计划
+        
+    Returns:
+        格式化的行程文本
+    """
+    if not trip_plan or not trip_plan.days:
+        return "暂无行程安排"
+    
+    info_lines = ["**已分配的行程安排：**\n"]
+    
+    for day in trip_plan.days:
+        info_lines.append(f"**第{day.day_index + 1}天 ({day.date})：**")
+        if day.attractions:
+            for i, attraction in enumerate(day.attractions, 1):
+                info_lines.append(f"  {i}. {attraction.name}")
+                if attraction.rating:
+                    info_lines.append(f"     - 评分: {attraction.rating}")
+                if attraction.ticket_price:
+                    info_lines.append(f"     - 门票: {attraction.ticket_price}元")
+                if attraction.address:
+                    info_lines.append(f"     - 地址: {attraction.address}")
+                if attraction.open_time:
+                    info_lines.append(f"     - 开放时间: {attraction.open_time}")
+        else:
+            info_lines.append("  暂无景点安排")
+        info_lines.append("")
+    
+    if trip_plan.days and trip_plan.days[0].hotel:
+        hotel = trip_plan.days[0].hotel
+        info_lines.append(f"**推荐酒店：**{hotel.name}")
+        if hotel.rating:
+            info_lines.append(f"  - 评分: {hotel.rating}")
+        if hotel.lowest_price:
+            info_lines.append(f"  - 价格: {hotel.lowest_price}元/晚")
+        if hotel.address:
+            info_lines.append(f"  - 地址: {hotel.address}")
+        info_lines.append("")
+    
+    return "\n".join(info_lines)

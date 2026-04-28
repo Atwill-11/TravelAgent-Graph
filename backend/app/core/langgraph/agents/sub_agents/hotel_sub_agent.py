@@ -4,31 +4,29 @@ from app.core.langgraph.tools import get_hotel_tools
 from app.schemas import Hotel
 from app.core.prompts import HOTEL_AGENT_PROMPT
 
-from langchain_qwq import ChatQwen  
-from langchain.agents import create_agent  
+from langchain_qwq import ChatQwen
+from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 
-# 初始化语言模型
 model = ChatQwen(
     model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
     api_key=settings.DASHSCOPE_API_KEY,
     api_base=settings.DASHSCOPE_API_BASE,
     temperature=0.7,
     max_tokens=1000,
-    timeout=180,  # 增加到 3 分钟，支持复杂的酒店搜索
+    timeout=180,
     max_retries=2,
 )
 
-# 创建子智能体（使用酒店推荐专用工具集）
 hotel_sub_agent = create_agent(
-    model=model, 
-    tools=get_hotel_tools(),  # 只包含酒店推荐相关的工具
+    model=model,
+    tools=get_hotel_tools(),
     system_prompt=HOTEL_AGENT_PROMPT,
 )
 logger.info("hotel子智能体创建完成")
 
-# 将子智能体封装为一个工具，供主智能体调用
+
 @tool("hotel_sub_agent", description="酒店子智能体，专门用于推荐酒店信息的任务")
 async def call_hotel_sub_agent(query: str) -> dict:
     """调用hotel子智能体处理查询，返回文本结果和结构化酒店数据。
@@ -45,9 +43,7 @@ async def call_hotel_sub_agent(query: str) -> dict:
     
     hotels = []
     for msg in messages:
-        
         if isinstance(msg, ToolMessage):
-            
             if msg.name == "search_hotels_with_details":
                 try:
                     import json
@@ -61,9 +57,9 @@ async def call_hotel_sub_agent(query: str) -> dict:
                         continue
                     
                     pois = data.get("pois", [])
-                    logger.info(f"pois 数量: {len(pois)}")
+                    logger.info(f"从工具调用中提取到 {len(pois)} 个酒店")
                     
-                    for i, poi in enumerate(pois):
+                    for poi in pois:
                         detail = poi.get("detail", {})
                         
                         if detail and "error" not in detail:
@@ -79,8 +75,8 @@ async def call_hotel_sub_agent(query: str) -> dict:
                     logger.error(f"解析酒店数据失败: {e}")
                     import traceback
                     traceback.print_exc()
-                    pass
     
+    logger.info(f"酒店搜索完成，找到 {len(hotels)} 个有效酒店")
     return {
         "text": text_result,
         "structured_data": hotels,

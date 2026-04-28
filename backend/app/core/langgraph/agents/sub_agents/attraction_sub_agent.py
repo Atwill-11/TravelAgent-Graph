@@ -4,30 +4,27 @@ from app.core.langgraph.tools import get_attraction_tools
 from app.schemas import Attraction
 from app.core.prompts import ATTRACTION_AGENT_PROMPT
 
-from langchain_qwq import ChatQwen  
-from langchain.agents import create_agent  
+from langchain_qwq import ChatQwen
+from langchain.agents import create_agent
 from langchain.tools import tool
+from langchain_core.messages import ToolMessage
 
-# 初始化语言模型
 model = ChatQwen(
     model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
     api_key=settings.DASHSCOPE_API_KEY,
     api_base=settings.DASHSCOPE_API_BASE,
     temperature=0.7,
     max_tokens=1000,
-    timeout=180,  # 增加到 3 分钟，支持复杂的景点搜索
+    timeout=180,
     max_retries=2,
 )
 
-# 创建子智能体（使用景点搜索专用工具集）
 attraction_sub_agent = create_agent(
-    model=model, 
-    tools=get_attraction_tools(),  # 只包含景点搜索相关的工具
+    model=model,
+    tools=get_attraction_tools(),
     system_prompt=ATTRACTION_AGENT_PROMPT,
 )
 logger.info("attraction子智能体创建完成")
-# 将子智能体封装为一个工具，供主智能体调用
-from langchain_core.messages import ToolMessage
 
 
 @tool("attraction_sub_agent", description="景点子智能体，专门用于搜索景点信息的任务")
@@ -46,9 +43,7 @@ async def call_attraction_sub_agent(query: str) -> dict:
     
     attractions = []
     for msg in messages:
-        
         if isinstance(msg, ToolMessage):
-            
             if msg.name == "search_attractions_with_details":
                 try:
                     import json
@@ -62,9 +57,9 @@ async def call_attraction_sub_agent(query: str) -> dict:
                         continue
                     
                     pois = data.get("pois", [])
-                    logger.info(f"pois 数量: {len(pois)}")
+                    logger.info(f"从工具调用中提取到 {len(pois)} 个景点")
                     
-                    for i, poi in enumerate(pois):
+                    for poi in pois:
                         detail = poi.get("detail", {})
                         
                         if detail and "error" not in detail:
@@ -80,8 +75,8 @@ async def call_attraction_sub_agent(query: str) -> dict:
                     logger.error(f"解析景点数据失败: {e}")
                     import traceback
                     traceback.print_exc()
-                    pass
     
+    logger.info(f"景点搜索完成，找到 {len(attractions)} 个有效景点")
     return {
         "text": text_result,
         "structured_data": attractions,

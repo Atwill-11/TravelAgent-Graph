@@ -36,6 +36,7 @@ class TravelMemoryManager:
         if self.store is None:
             self._connection_pool = connection_pool
             
+            # 只将content字段向量化
             index_config = {
                 "dims": 1024,
                 "embed": self.embeddings,

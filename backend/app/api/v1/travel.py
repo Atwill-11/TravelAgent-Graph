@@ -1,4 +1,5 @@
 import json
+import uuid
 from typing import AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,6 +22,7 @@ from app.core.langgraph.agents.travel_plan_agent.node import (
 from app.models.session import Session
 from app.api.v1.auth import get_current_session
 from app.core.logging import logger
+from app.services.database import database_service
 
 router = APIRouter()
 
@@ -68,15 +70,17 @@ async def _stream_event_generator(
     request: TripRequest,
     session_id: str,
     user_id: str,
+    thread_id: str,
 ) -> AsyncGenerator[str, None]:
     """SSE事件生成器，将旅行规划过程拆分为流式事件。"""
     try:
-        yield f"event: start\ndata: {json.dumps({'message': '开始规划旅行...', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        yield f"event: start\ndata: {json.dumps({'message': '开始规划旅行...', 'session_id': session_id, 'thread_id': thread_id}, ensure_ascii=False)}\n\n"
 
         async for event in stream_travel_planner(
             request=request,
             session_id=session_id,
             user_id=user_id,
+            thread_id=thread_id,
         ):
             for node_name, node_state in event.items():
                 display_name = NODE_DISPLAY_NAMES.get(node_name, node_name)
@@ -205,7 +209,7 @@ async def _stream_event_generator(
                     }
                     yield f"event: step\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        interrupt_info = await get_graph_interrupt_state(session_id)
+        interrupt_info = await get_graph_interrupt_state(session_id, thread_id)
         if interrupt_info:
             trip_plan_data = interrupt_info.get('trip_plan')
             data = {
@@ -236,11 +240,20 @@ async def plan_trip_stream(
     session: Session = Depends(get_current_session),
 ):
     """以SSE流式方式生成旅行计划，实时展示Agent思考过程。"""
+    thread_id = f"{session.id}_{uuid.uuid4().hex[:8]}"
+    
+    try:
+        await database_service.update_session_thread_id(session.id, thread_id)
+        logger.info("生成新的thread_id", session_id=session.id, thread_id=thread_id)
+    except Exception as e:
+        logger.error("更新session thread_id失败", error=str(e), session_id=session.id)
+    
     return StreamingResponse(
         _stream_event_generator(
             request=request,
             session_id=session.id,
             user_id=str(session.user_id),
+            thread_id=thread_id,
         ),
         media_type="text/event-stream",
         headers={
@@ -256,15 +269,17 @@ async def _resume_stream_event_generator(
     session_id: str,
     user_id: str,
     resume_value: dict,
+    thread_id: str,
 ) -> AsyncGenerator[str, None]:
     """SSE事件生成器，用于恢复被中断的图并继续流式输出。"""
     try:
-        yield f"event: start\ndata: {json.dumps({'message': '继续规划旅行...', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        yield f"event: start\ndata: {json.dumps({'message': '继续规划旅行...', 'session_id': session_id, 'thread_id': thread_id}, ensure_ascii=False)}\n\n"
 
         async for event in resume_travel_planner(
             session_id=session_id,
             user_id=user_id,
             resume_value=resume_value,
+            thread_id=thread_id,
         ):
             for node_name, node_state in event.items():
                 display_name = NODE_DISPLAY_NAMES.get(node_name, node_name)
@@ -393,7 +408,7 @@ async def _resume_stream_event_generator(
                     }
                     yield f"event: step\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        interrupt_info = await get_graph_interrupt_state(session_id)
+        interrupt_info = await get_graph_interrupt_state(session_id, thread_id)
         if interrupt_info:
             trip_plan_data = interrupt_info.get('trip_plan')
             data = {
@@ -436,7 +451,14 @@ async def resume_trip_stream(
             detail="action为modify时必须提供feedback参数",
         )
     
-    interrupt_state = await get_graph_interrupt_state(session.id)
+    thread_id = session.current_thread_id
+    if not thread_id:
+        raise HTTPException(
+            status_code=400,
+            detail="当前会话没有活跃的规划轮次，无法恢复",
+        )
+    
+    interrupt_state = await get_graph_interrupt_state(session.id, thread_id)
     if interrupt_state is None:
         raise HTTPException(
             status_code=400,
@@ -448,11 +470,19 @@ async def resume_trip_stream(
         "feedback": resume_request.feedback or "",
     }
     
+    if resume_request.action == "complete":
+        try:
+            await database_service.update_session_thread_id(session.id, None)
+            logger.info("完成规划，清除thread_id", session_id=session.id, thread_id=thread_id)
+        except Exception as e:
+            logger.error("清除session thread_id失败", error=str(e), session_id=session.id)
+    
     return StreamingResponse(
         _resume_stream_event_generator(
             session_id=session.id,
             user_id=str(session.user_id),
             resume_value=resume_value,
+            thread_id=thread_id,
         ),
         media_type="text/event-stream",
         headers={

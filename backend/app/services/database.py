@@ -245,6 +245,31 @@ class DatabaseService:
             logger.info("会话名称更新成功", session_id=session_id, name=name)
             return chat_session
 
+    async def update_session_thread_id(self, session_id: str, thread_id: str | None) -> ChatSession:
+        """更新会话的当前thread_id。
+
+        Args:
+            session_id: 要更新的会话ID
+            thread_id: 新的thread_id，设置为None表示清除当前轮次
+
+        Returns:
+            ChatSession: 更新后的会话对象
+
+        Raises:
+            HTTPException: 如果会话不存在
+        """
+        with Session(self.engine) as session:
+            chat_session = session.get(ChatSession, session_id)
+            if not chat_session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            chat_session.current_thread_id = thread_id
+            session.add(chat_session)
+            session.commit()
+            session.refresh(chat_session)
+            logger.info("会话thread_id更新成功", session_id=session_id, thread_id=thread_id)
+            return chat_session
+
     def get_session_maker(self):
         """获取一个绑定到当前引擎的数据库会话实例。
         注意：调用者需要负责管理会话生命周期（建议用 with 语句）。

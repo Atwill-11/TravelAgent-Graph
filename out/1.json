@@ -1,0 +1,215 @@
+{
+  "text": "为您找到杭州的自然风光景点，以下是精选推荐：\n\n## 🌿 杭州自然风光景点推荐\n\n### 1. **千岛湖风景区** ⭐⭐⭐⭐⭐ (4.8分)\n- **地址**：千岛湖镇\n- **类型**：国家级景点 (AAAAA级)\n- **开放时间**：24小时营业\n  - 中心湖区：8:00-16:00\n  - 东南湖区：8:00-15:00\n- **特色**：新安江水库，拥有1078个岛屿，湖光山色美不胜收\n\n### 2. **西溪国家湿地公园** ⭐⭐⭐⭐⭐ (4.8分)\n- **地址**：天目山路518号\n- **类型**：国家级景点 (AAAAA级)\n- **开放时间**：\n  - 4月1日-10月8日：7:30-18:30\n  - 10月9日-次年3月31日：8:00-17:30\n- **特色**：城市湿地生态系统，被誉为\"杭州之肾\"\n\n### 3. **太子湾公园** ⭐⭐⭐⭐⭐ (4.8分)\n- **地址**：南星街道南山路1-1号\n- **类型**：公园\n- **开放时间**：24小时营业\n- **特色**：西湖边的美丽公园，春季郁金香花海著名\n\n### 4. **杭州植物园** ⭐⭐⭐⭐⭐ (4.8分)\n- **地址**：桃源岭1号\n- **类型**：植物园\n- **开放时间**：7:00-17:00\n- **特色**：植物种类丰富，环境清幽，适合休闲散步\n\n### 5. **良渚古城遗址公园** ⭐⭐⭐⭐⭐ (4.7分)\n- **地址**：瓶窑镇凤都路与104国道辅路交叉口西北200米\n- **类型**：国家考古遗址公园\n- **开放时间**：9:00-17:00 (最晚进入16:00)\n- **特色**：世界文化遗产，五千年文明遗址\n\n### 6. **湖滨公园** ⭐⭐⭐⭐⭐ (4.7分)\n- **地址**：龙井路1号杭州西湖风景名胜区内\n- **类型**：公园\n- **开放时间**：24小时营业\n- **特色**：西湖核心景区，湖景优美\n\n### 7. **大运河杭钢公园** ⭐⭐⭐⭐⭐ (4.8分)\n- **地址**：城炼街与焦北巷交叉口南240米\n- **类型**：公园\n- **开放时间**：9:00-22:00\n- **特色**：工业遗址改造的生态公园\n\n### 8. **临平公园** ⭐⭐⭐⭐⭐ (4.7分)\n- **地址**：沿山路105号\n- **类型**：公园\n- **开放时间**：24小时营业\n\n---\n\n**💡 游览建议：**\n- 如果想看湖光山色，推荐**千岛湖**和**西湖**周边景点\n- 喜欢湿地生态，**西溪湿地公园**是必去之地\n- 春季赏花首选**太子湾公园**\n- 对历史文化感兴趣，**良渚古城遗址公园**不容错过\n\n需要了解更多景点详情或其他类型的景点吗？",
+  "structured_data": [
+    {
+      "name": "千岛湖风景区",
+      "address": "千岛湖镇",
+      "location": {
+        "longitude": 119.055172,
+        "latitude": 29.545082
+      },
+      "poi_id": "B0FFFYF0GP",
+      "city": "杭州市",
+      "type": "风景名胜;风景名胜;国家级景点",
+      "rating": 4.8,
+      "open_time": "24小时营业",
+      "opentime2": "周一至周日 00:00-24:00；中心湖区:开园时间:8:00-16:00；游船入园时间:8:00-14:30；快艇入园时间:8:00-16:00 东南湖区:开园时间:8:00-15:00；游船入园时间:8:00-13:30；快艇入园时间:8:00-15:00",
+      "business_area": "",
+      "level": "AAAAA",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "西溪国家湿地公园",
+      "address": "天目山路518号",
+      "location": {
+        "longitude": 120.061159,
+        "latitude": 30.255079
+      },
+      "poi_id": "B023B06P06",
+      "city": "杭州市",
+      "type": "风景名胜;风景名胜;国家级景点",
+      "rating": 4.8,
+      "open_time": "",
+      "opentime2": "4月1日至10月8日:周一至周日:7:30-18:30，10月9日至次年3月31日:周一至周日:8:00-17:30",
+      "business_area": "西溪",
+      "level": "AAAAA",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "西溪国家湿地公园东区",
+      "address": "天目山路518号西溪国家湿地公园(东北角)",
+      "location": {
+        "longitude": 120.068053,
+        "latitude": 30.269035
+      },
+      "poi_id": "B0FFFCMNCW",
+      "city": "杭州市",
+      "type": "风景名胜;风景名胜;国家级景点|风景名胜;公园广场;公园",
+      "rating": 4.3,
+      "open_time": "07:30-18:30",
+      "opentime2": "周一至周日 07:30-18:30",
+      "business_area": "西溪",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "杭州西湖风景名胜区-太子湾公园",
+      "address": "南星街道南山路1-1号",
+      "location": {
+        "longitude": 120.142177,
+        "latitude": 30.22547
+      },
+      "poi_id": "B023B02074",
+      "city": "杭州市",
+      "type": "风景名胜;公园广场;公园",
+      "rating": 4.8,
+      "open_time": "24小时营业",
+      "opentime2": "周一至周日 00:00-24:00",
+      "business_area": "西湖",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "杭州植物园",
+      "address": "桃源岭1号",
+      "location": {
+        "longitude": 120.117009,
+        "latitude": 30.25291
+      },
+      "poi_id": "B023B09LTB",
+      "city": "杭州市",
+      "type": "风景名胜;公园广场;植物园",
+      "rating": 4.8,
+      "open_time": "07:00-17:00",
+      "opentime2": "周一至周日 07:00-17:00",
+      "business_area": "西湖",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "良渚古城遗址公园",
+      "address": "瓶窑镇凤都路与104国道辅路交叉口西北200米",
+      "location": {
+        "longitude": 119.991005,
+        "latitude": 30.389549
+      },
+      "poi_id": "B023B14O96",
+      "city": "杭州市",
+      "type": "风景名胜;风景名胜相关;旅游景点",
+      "rating": 4.7,
+      "open_time": "09:00-17:00",
+      "opentime2": "09:00-17:00(最晚进入16:00)",
+      "business_area": "",
+      "level": "@super*value",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "大运河杭钢公园",
+      "address": "城炼街与焦北巷交叉口南240米",
+      "location": {
+        "longitude": 120.169294,
+        "latitude": 30.357413
+      },
+      "poi_id": "B0JUHZTDGN",
+      "city": "杭州市",
+      "type": "风景名胜;公园广场;公园",
+      "rating": 4.8,
+      "open_time": "09:00-22:00",
+      "opentime2": "周一至周日 09:00-22:00",
+      "business_area": "",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "杭州西湖风景名胜区-湖滨公园",
+      "address": "龙井路1号杭州西湖风景名胜区内(东北角)",
+      "location": {
+        "longitude": 120.158818,
+        "latitude": 30.256583
+      },
+      "poi_id": "B023B05MLT",
+      "city": "杭州市",
+      "type": "风景名胜;公园广场;公园",
+      "rating": 4.7,
+      "open_time": "24小时营业",
+      "opentime2": "周一至周日 00:00-24:00",
+      "business_area": "西湖旅游区中心片区",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "临平公园",
+      "address": "沿山路105号",
+      "location": {
+        "longitude": 120.283268,
+        "latitude": 30.418075
+      },
+      "poi_id": "B023B07GWE",
+      "city": "杭州市",
+      "type": "风景名胜;公园广场;公园",
+      "rating": 4.7,
+      "open_time": "24小时营业",
+      "opentime2": "周一至周日 00:00-24:00",
+      "business_area": "",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    },
+    {
+      "name": "湖滨步行街",
+      "address": "凤起路539-4号(龙翔桥地铁站C口步行120米)",
+      "location": {
+        "longitude": 120.162923,
+        "latitude": 30.254158
+      },
+      "poi_id": "B0FFL9RQ5O",
+      "city": "杭州市",
+      "type": "购物服务;特色商业街;步行街",
+      "rating": 4.8,
+      "open_time": "10:00-22:00",
+      "opentime2": "周一至周日 10:00-22:00",
+      "business_area": "湖滨",
+      "level": "",
+      "ticket_price": 0,
+      "visit_duration": 120,
+      "description": null,
+      "photos": [],
+      "image_url": null
+    }
+  ]
+}

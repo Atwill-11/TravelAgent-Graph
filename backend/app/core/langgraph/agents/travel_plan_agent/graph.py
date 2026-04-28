@@ -340,6 +340,8 @@ async def run_travel_planner(
         "current_task": None,
         "trip_plan": None,
         "notes": {},
+        "attraction_pool": [],
+        "hotel_pool": [],
     }
     
     # 构建上下文
@@ -414,6 +416,7 @@ async def stream_travel_planner(
     request: TripRequest,
     session_id: str = "default",
     user_id: str = "default_user",
+    thread_id: str = None,
 ):
     """
     流式运行旅游规划智能体，逐步yield各节点的状态更新。
@@ -421,13 +424,24 @@ async def stream_travel_planner(
     
     Args:
         request: 旅行请求
-        session_id: 会话ID（同时作为thread_id用于检查点）
+        session_id: 会话ID
         user_id: 用户ID
+        thread_id: 检查点线程ID，用于区分不同的规划轮次。如果不提供，则使用session_id。
     
     Yields:
         dict: 每个节点执行后的状态更新事件
     """
     graph = await _get_compiled_graph()
+    
+    if thread_id is None:
+        thread_id = session_id
+    
+    logger.info(
+        "开始流式规划",
+        session_id=session_id,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
     
     historical_context = ""
     try:
@@ -461,6 +475,8 @@ async def stream_travel_planner(
         "trip_plan": None,
         "notes": {},
         "user_feedback": None,
+        "attraction_pool": [],
+        "hotel_pool": [],
     }
     
     context = TravelContext(
@@ -480,7 +496,7 @@ async def stream_travel_planner(
     }
 
     config = {
-        "configurable": {"thread_id": session_id},
+        "configurable": {"thread_id": thread_id},
         "callbacks": [CallbackHandler()],
     }
 
@@ -507,19 +523,32 @@ async def resume_travel_planner(
     session_id: str,
     user_id: str = "default_user",
     resume_value: dict = None,
+    thread_id: str = None,
 ):
     """
     恢复被interrupt暂停的旅游规划图，继续执行。
     
     Args:
-        session_id: 会话ID（同时作为thread_id用于检查点）
+        session_id: 会话ID
         user_id: 用户ID
         resume_value: 传递给interrupt的恢复值，格式: {"action": "complete"/"modify", "feedback": "..."}
+        thread_id: 检查点线程ID，用于恢复正确的checkpoint。如果不提供，则使用session_id。
     
     Yields:
         dict: 每个节点执行后的状态更新事件
     """
     graph = await _get_compiled_graph()
+    
+    if thread_id is None:
+        thread_id = session_id
+    
+    logger.info(
+        "恢复规划",
+        session_id=session_id,
+        thread_id=thread_id,
+        user_id=user_id,
+        resume_action=resume_value.get("action") if resume_value else None,
+    )
     
     context = TravelContext(
         user_id=user_id,
@@ -538,7 +567,7 @@ async def resume_travel_planner(
     }
 
     config = {
-        "configurable": {"thread_id": session_id},
+        "configurable": {"thread_id": thread_id},
         "callbacks": [CallbackHandler()],
     }
 
@@ -552,18 +581,22 @@ async def resume_travel_planner(
             yield event
 
 
-async def get_graph_interrupt_state(session_id: str) -> dict | None:
+async def get_graph_interrupt_state(session_id: str, thread_id: str = None) -> dict | None:
     """
     获取图的当前中断状态，用于判断图是否在user_review节点被中断。
     
     Args:
         session_id: 会话ID
+        thread_id: 检查点线程ID，如果不提供，则使用session_id
     
     Returns:
         中断信息字典，如果没有中断则返回None
     """
+    if thread_id is None:
+        thread_id = session_id
+    
     graph = await _get_compiled_graph()
-    config = {"configurable": {"thread_id": session_id}}
+    config = {"configurable": {"thread_id": thread_id}}
     
     try:
         state = await graph.aget_state(config)
@@ -574,7 +607,7 @@ async def get_graph_interrupt_state(session_id: str) -> dict | None:
                     return interrupt_value
         return None
     except Exception as e:
-        logger.error("获取图中断状态失败", error=str(e), session_id=session_id)
+        logger.error("获取图中断状态失败", error=str(e), session_id=session_id, thread_id=thread_id)
         return None
 
 

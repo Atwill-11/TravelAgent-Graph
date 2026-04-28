@@ -320,8 +320,16 @@ async def run_travel_planner(
                     session_id=session_id,
                     context_length=len(historical_context)
                 )
+            else:
+                historical_context = "该会话没有相关的历史规划记忆"
+                logger.info(
+                    "该会话没有历史规划记忆",
+                    user_id=user_id,
+                    session_id=session_id
+                )
     except Exception as e:
         logger.warning("获取历史规划失败，继续执行", error=str(e))
+        historical_context = "该会话没有相关的历史规划记忆"
     
     # 构建初始状态
     initial_state = {
@@ -433,8 +441,16 @@ async def stream_travel_planner(
                     session_id=session_id,
                     context_length=len(historical_context),
                 )
+            else:
+                historical_context = "该会话没有相关的历史规划记忆"
+                logger.info(
+                    "该会话没有历史规划记忆",
+                    user_id=user_id,
+                    session_id=session_id
+                )
     except Exception as e:
         logger.warning("获取历史规划失败，继续执行", error=str(e))
+        historical_context = "该会话没有相关的历史规划记忆"
     
     initial_state = {
         "trip_request": request,

@@ -68,7 +68,7 @@ class TravelMemoryManager:
         Args:
             user_id: 用户ID
             current_request: 当前的旅行请求
-            session_id: 会话ID（可选，如果提供则优先搜索该会话的记忆）
+            session_id: 会话ID（必须提供，用于隔离不同会话的数据）
             
         Returns:
             相关历史规划的文本描述
@@ -77,40 +77,26 @@ class TravelMemoryManager:
             if self.store is None:
                 return ""
             
+            if not session_id:
+                logger.warning("未提供 session_id，无法搜索会话记忆")
+                return ""
+            
             query = self._build_search_query(current_request)
             memories = []
             
-            # 如果提供了 session_id，优先搜索该会话的记忆
-            if session_id:
-                try:
-                    results = await self.store.asearch(
-                        ("travel_plans", str(user_id), session_id),
-                        query=query,
-                        limit=3
-                    )
-                    for item in results:
-                        memory_text = self._format_memory_item(item, "当前会话")
-                        if memory_text:
-                            memories.append(memory_text)
-                except Exception as e:
-                    logger.warning("搜索会话记忆失败", session_id=session_id, error=str(e))
-            
-            # 如果会话记忆不足，再搜索用户所有会话的记忆
-            if len(memories) < 3:
-                try:
-                    results = await self.store.asearch(
-                        ("travel_plans", str(user_id)),
-                        query=query,
-                        limit=5
-                    )
-                    for item in results:
-                        memory_text = self._format_memory_item(item, "历史会话")
-                        if memory_text and memory_text not in memories:
-                            memories.append(memory_text)
-                            if len(memories) >= 5:
-                                break
-                except Exception as e:
-                    logger.warning("搜索用户历史记忆失败", user_id=user_id, error=str(e))
+            # 只搜索当前会话的记忆
+            try:
+                results = await self.store.asearch(
+                    ("travel_plans", str(user_id), session_id),
+                    query=query,
+                    limit=5
+                )
+                for item in results:
+                    memory_text = self._format_memory_item(item, "当前会话")
+                    if memory_text:
+                        memories.append(memory_text)
+            except Exception as e:
+                logger.warning("搜索会话记忆失败", session_id=session_id, error=str(e))
             
             if not memories:
                 return ""
@@ -188,11 +174,15 @@ class TravelMemoryManager:
             user_id: 用户ID
             request: 旅行请求
             plan_summary: 规划结果摘要（可选）
-            session_id: 会话ID（可选，如果提供则存储到会话专属命名空间）
+            session_id: 会话ID（必须提供，用于隔离不同会话的数据）
         """
         try:
             if self.store is None:
                 logger.warning("Store 未初始化，无法保存规划请求")
+                return
+            
+            if not session_id:
+                logger.warning("未提供 session_id，无法保存规划请求")
                 return
             
             content = self._extract_memory_content(request, plan_summary)
@@ -216,25 +206,9 @@ class TravelMemoryManager:
                 "session_id": session_id,
             }
             
-            # 如果提供了 session_id，存储到会话专属命名空间
-            # 同时也存储到用户全局命名空间，便于跨会话搜索
-            if session_id:
-                await self.store.aput(
-                    ("travel_plans", str(user_id), session_id),
-                    key,
-                    memory_data
-                )
-                logger.info(
-                    "规划请求保存到会话命名空间",
-                    user_id=user_id,
-                    session_id=session_id,
-                    city=request.city,
-                    days=request.travel_days
-                )
-            
-            # 同时存储到用户全局命名空间
+            # 只存储到会话专属命名空间
             await self.store.aput(
-                ("travel_plans", str(user_id)),
+                ("travel_plans", str(user_id), session_id),
                 key,
                 memory_data
             )
@@ -273,6 +247,75 @@ class TravelMemoryManager:
             query_parts.append(request.free_text_input)
         
         return " ".join(query_parts)
+
+    async def delete_session_memories(
+        self,
+        user_id: str,
+        session_id: str
+    ) -> bool:
+        """删除指定会话的所有历史规划记忆。
+        
+        Args:
+            user_id: 用户ID
+            session_id: 会话ID
+            
+        Returns:
+            bool: 删除成功返回 True，失败返回 False
+        """
+        try:
+            if self.store is None:
+                logger.warning("Store 未初始化，无法删除会话记忆")
+                return False
+            
+            if not session_id:
+                logger.warning("未提供 session_id，无法删除会话记忆")
+                return False
+            
+            if self._connection_pool is None:
+                logger.warning("连接池未初始化，无法删除会话记忆")
+                return False
+            
+            # 构建命名空间前缀字符串（LangGraph 使用 . 分隔的字符串格式）
+            # 例如: travel_plans.6.50f9a29a-f49a-4ff5-8894-68ca9a3ca8b7
+            namespace_prefix = f"travel_plans.{user_id}.{session_id}"
+            
+            # 直接执行 SQL 删除该命名空间下的所有数据
+            async with self._connection_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    # 先删除 store_vectors 表中的向量数据
+                    # 使用 LIKE 匹配以该前缀开头的所有记录
+                    await cur.execute(
+                        "DELETE FROM store_vectors WHERE prefix = %s OR prefix LIKE %s",
+                        (namespace_prefix, f"{namespace_prefix}.%")
+                    )
+                    vectors_deleted = cur.rowcount
+                    
+                    # 再删除 store 表中的键值数据
+                    await cur.execute(
+                        "DELETE FROM store WHERE prefix = %s OR prefix LIKE %s",
+                        (namespace_prefix, f"{namespace_prefix}.%")
+                    )
+                    store_deleted = cur.rowcount
+                    
+                    logger.info(
+                        "会话记忆删除成功",
+                        user_id=user_id,
+                        session_id=session_id,
+                        namespace=namespace_prefix,
+                        vectors_deleted=vectors_deleted,
+                        store_deleted=store_deleted
+                    )
+                    
+                    return True
+                    
+        except Exception as e:
+            logger.exception(
+                "删除会话记忆失败",
+                user_id=user_id,
+                session_id=session_id,
+                error=str(e)
+            )
+            return False
 
     def _extract_memory_content(
         self,

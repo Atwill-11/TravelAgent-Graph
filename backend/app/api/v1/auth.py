@@ -24,6 +24,7 @@ from app.core.logging import (
     bind_context,
     logger,
 )
+from app.core.langgraph.agents.travel_plan_agent.graph import _get_memory_manager
 from app.models.session import Session
 from app.models.user import User
 from app.schemas import (
@@ -328,6 +329,14 @@ async def delete_session(session_id: str, user: User = Depends(get_current_user)
         session = await db_service.get_session(sanitized_session_id)
         if session is None or session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Cannot delete other sessions")
+
+        # 删除会话相关的历史规划记忆
+        try:
+            memory_manager = await _get_memory_manager()
+            if memory_manager:
+                await memory_manager.delete_session_memories(str(user.id), sanitized_session_id)
+        except Exception as e:
+            logger.warning("删除会话记忆失败，继续删除会话", session_id=sanitized_session_id, error=str(e))
 
         # 删除会话
         await db_service.delete_session(sanitized_session_id)

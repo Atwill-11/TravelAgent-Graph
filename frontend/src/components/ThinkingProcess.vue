@@ -33,8 +33,15 @@
 
         <div class="step-indicator">
           <div class="indicator-icon" v-if="step.status === 'completed'">✓</div>
-          <div class="indicator-icon spinning" v-else-if="step.status === 'running'">⟳</div>
-          <div class="indicator-icon" v-else-if="step.status === 'failed'">✗</div>
+          <div
+            class="indicator-icon spinning"
+            v-else-if="step.status === 'running'"
+          >
+            ⟳
+          </div>
+          <div class="indicator-icon" v-else-if="step.status === 'failed'">
+            ✗
+          </div>
           <div class="indicator-icon pending" v-else>{{ index + 1 }}</div>
         </div>
 
@@ -45,14 +52,20 @@
             <span class="step-time">{{ formatTime(step.timestamp) }}</span>
           </div>
           <div class="step-message" v-if="step.message">
-            <span class="message-text" :class="{ 'typing-effect': step.status === 'running' }">
+            <span
+              class="message-text"
+              :class="{ 'typing-effect': step.status === 'running' }"
+            >
               {{ step.message }}
             </span>
           </div>
           <div class="step-details" v-if="step.details">
             <span class="details-text">{{ step.details }}</span>
           </div>
-          <div class="plan-items" v-if="step.plan_items && step.plan_items.length > 0">
+          <div
+            class="plan-items"
+            v-if="step.plan_items && step.plan_items.length > 0"
+          >
             <div
               v-for="(item, idx) in step.plan_items"
               :key="idx"
@@ -70,23 +83,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue"
-import type { ThinkingStep } from "@/types"
-
-const props = defineProps<{
-  steps: ThinkingStep[]
-  isRunning: boolean
-  hasError: boolean
-}>()
+defineProps<{
+  steps: {
+    id: string;
+    node: string;
+    display_name: string;
+    icon: string;
+    message: string;
+    status: "running" | "completed" | "failed" | "pending";
+    timestamp: number;
+    details?: string;
+    plan_items?: { task: string; icon: string; type_display: string }[];
+  }[];
+  isRunning: boolean;
+  hasError: boolean;
+}>();
 
 const formatTime = (timestamp: number): string => {
-  const date = new Date(timestamp)
+  const date = new Date(timestamp);
   return date.toLocaleTimeString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  })
-}
+  });
+};
 </script>
 
 <style scoped>
@@ -140,9 +160,16 @@ const formatTime = (timestamp: number): string => {
 }
 
 @keyframes dotBlink {
-  0%, 20% { opacity: 0; }
-  50% { opacity: 1; }
-  100% { opacity: 0; }
+  0%,
+  20% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .steps-timeline {
@@ -221,8 +248,12 @@ const formatTime = (timestamp: number): string => {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .indicator-icon.pending {
@@ -291,8 +322,13 @@ const formatTime = (timestamp: number): string => {
 }
 
 @keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 .step-details {

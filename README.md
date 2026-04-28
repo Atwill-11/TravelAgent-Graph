@@ -171,7 +171,7 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
                                               ▼                                   ▼
                                        ┌─────────────┐                    ┌─────────────┐
                                        │    END      │                    │    Plan     │
-                                       │ (完成规划)  │                    │  (修改模式) │
+                                       │ (完成规划)   │                    │  (修改模式)   │
                                        └─────────────┘                    └─────────────┘
 ```
 
@@ -251,10 +251,27 @@ TravelAgent-Graph/
 ├── frontend/                  # 前端项目（Vue 3 + TypeScript + Vite）
 │   ├── src/
 │   │   ├── components/        # 可复用组件
-│   │   │   ├── SessionSidebar.vue    # 会话侧边栏
-│   │   │   └── ThinkingProcess.vue   # SSE 思考过程展示组件
+│   │   │   ├── home/          # 首页组件
+│   │   │   │   ├── BgDecoration.vue    # 背景装饰动画
+│   │   │   │   ├── FormSection.vue     # 表单区块通用组件
+│   │   │   │   ├── PageHeader.vue      # 页面标题区域
+│   │   │   │   └── TripForm.vue        # 旅行表单组件（含 SSE 流式响应）
+│   │   │   ├── result/        # 结果页组件
+│   │   │   │   ├── BudgetCard.vue      # 预算卡片
+│   │   │   │   ├── DaysCard.vue        # 日程卡片
+│   │   │   │   ├── MapCard.vue         # 地图卡片
+│   │   │   │   ├── OverviewCard.vue    # 概览卡片
+│   │   │   │   ├── SideNav.vue         # 侧边导航
+│   │   │   │   ├── SideReviewPanel.vue # 审阅面板（含 SSE 流式响应）
+│   │   │   │   └── WeatherCard.vue     # 天气卡片
+│   │   │   ├── SessionSidebar.vue      # 会话侧边栏
+│   │   │   └── ThinkingProcess.vue     # SSE 思考过程展示组件
+│   │   ├── composables/       # 组合式函数
+│   │   │   ├── useSession.ts           # 会话管理逻辑
+│   │   │   ├── useTripForm.ts          # 表单数据和验证
+│   │   │   └── useTripSubmit.ts        # SSE 流式提交逻辑
 │   │   ├── views/             # 页面视图
-│   │   │   ├── Home.vue       # 主页（含 SSE 流式响应集成）
+│   │   │   ├── Home.vue       # 主页
 │   │   │   ├── Login.vue      # 登录页
 │   │   │   └── Result.vue     # 结果页
 │   │   ├── router/            # 路由配置

@@ -6,6 +6,7 @@ from .weather import WEATHER_AGENT_PROMPT
 from .travel import (
     PLAN_MODEL_PROMPT,
     SUMMARY_PROMPT,
+    SELECTION_AGENT_PROMPT,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "WEATHER_AGENT_PROMPT",
     "PLAN_MODEL_PROMPT",
     "SUMMARY_PROMPT",
+    "SELECTION_AGENT_PROMPT",
 ]

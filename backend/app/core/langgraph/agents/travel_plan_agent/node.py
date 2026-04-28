@@ -24,6 +24,7 @@ from app.core.langgraph.agents.sub_agents import (
     call_hotel_sub_agent,
     call_weather_sub_agent,
     call_rag_sub_agent,
+    call_selection_sub_agent,
 )
 from app.schemas import (
     TravelPlannerState,
@@ -81,6 +82,7 @@ SUB_AGENT_DISPLAY_NAMES = {
     "attraction": "景点搜索",
     "hotel": "酒店推荐",
     "rag": "知识库检索",
+    "selection": "景点酒店分配",
 }
 
 SUB_AGENT_DISPLAY_ICONS = {
@@ -88,6 +90,7 @@ SUB_AGENT_DISPLAY_ICONS = {
     "attraction": "🏛️",
     "hotel": "🏨",
     "rag": "📚",
+    "selection": "🎯",
 }
 
 # ========== 子智能体路由映射 ==========
@@ -97,6 +100,7 @@ SUB_AGENT_MAP = {
     "attraction": call_attraction_sub_agent,
     "hotel": call_hotel_sub_agent,
     "rag": call_rag_sub_agent,
+    "selection": call_selection_sub_agent,
 }
 
 # ========== 节点函数 ==========
@@ -247,7 +251,15 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     
     # 执行子智能体
     try:
-        result = await sub_agent_func.ainvoke({"query": task_name})
+        if task_type == "selection":
+            query = _build_selection_query(
+                state=state,
+                task_description=task_name,
+            )
+        else:
+            query = task_name
+        
+        result = await sub_agent_func.ainvoke({"query": query})
 
         if isinstance(result, dict) and "text" in result:
             task_result = result["text"]
@@ -328,6 +340,38 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                 import traceback
                 traceback.print_exc()
 
+        if task_type == "selection" and structured_data:
+            try:
+                from app.schemas.travel.selection import DayPlanSelection
+                if isinstance(structured_data, DayPlanSelection):
+                    selection_result = structured_data
+                elif isinstance(structured_data, dict):
+                    selection_result = DayPlanSelection(**structured_data)
+                else:
+                    raise ValueError(f"未知的 structured_data 类型: {type(structured_data)}")
+                
+                trip_request = state.trip_request
+                if trip_request:
+                    start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
+                    travel_days = trip_request.travel_days
+                    weather_info = state.trip_plan.weather_info if state.trip_plan else None
+                    
+                    trip_plan = _build_trip_plan_from_selection(
+                        selection_result=selection_result,
+                        attraction_pool=state.attraction_pool,
+                        hotel_pool=state.hotel_pool,
+                        trip_request=trip_request,
+                        start_date=start_date,
+                        travel_days=travel_days,
+                        weather_info=weather_info,
+                    )
+                    update["trip_plan"] = trip_plan
+                    logger.info("已根据选择结果更新旅行计划")
+            except Exception as e:
+                logger.error(f"解析选择结果失败: {e}")
+                import traceback
+                traceback.print_exc()
+
         return update
     except Exception as e:
         plan[current_task_idx].status = "failed"
@@ -343,25 +387,67 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
 def summarize_node(state: TravelPlannerState) -> dict:
     """
     总结节点。
-    使用 LLM 智能选择景点和酒店，生成最终旅游规划。
-    可以理解用户反馈，做出合理的选择。
+    生成最终旅游规划的文本描述。
+    如果 trip_plan 已经由 selection 任务创建，则只生成文本描述；
+    否则，先进行景点和酒店选择，再生成文本描述。
     """
     model = get_summary_model()
     
     sub_agent_results = state.sub_agent_results
     trip_request = state.trip_request
     user_request = state.messages[0].content if state.messages else ""
-    attraction_pool = state.attraction_pool
-    hotel_pool = state.hotel_pool
-    user_feedback = state.user_feedback
-    is_modification = state.notes.get("user_decision") == "modify"
-    weather_info = state.trip_plan.weather_info if state.trip_plan else None
     
     if not trip_request:
         return {
             "trip_plan": None,
             "messages": [AIMessage(content="缺少旅行请求信息")],
         }
+    
+    trip_plan = state.trip_plan
+    if not trip_plan or not trip_plan.days:
+        trip_plan = _create_trip_plan_from_selection(state, model)
+    
+    if not trip_plan:
+        return {
+            "trip_plan": None,
+            "messages": [AIMessage(content="无法生成旅行计划")],
+        }
+    
+    detailed_description = _generate_detailed_description(
+        trip_plan=trip_plan,
+        sub_agent_results=sub_agent_results,
+        user_request=user_request,
+        model=model,
+    )
+    
+    trip_plan.overall_suggestions = detailed_description
+    
+    return {
+        "trip_plan": trip_plan,
+        "messages": [AIMessage(content=detailed_description)],
+        "notes": {
+            **state.notes,
+            "plan_summary": detailed_description[:800] if detailed_description else "",
+        },
+    }
+
+
+def _create_trip_plan_from_selection(state: TravelPlannerState, model) -> TripPlan:
+    """从景点池和酒店池创建旅行计划
+    
+    Args:
+        state: 当前状态
+        model: LLM 模型
+        
+    Returns:
+        生成的旅行计划
+    """
+    trip_request = state.trip_request
+    attraction_pool = state.attraction_pool
+    hotel_pool = state.hotel_pool
+    user_feedback = state.user_feedback
+    is_modification = state.notes.get("user_decision") == "modify"
+    weather_info = state.trip_plan.weather_info if state.trip_plan else None
     
     start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
     travel_days = trip_request.travel_days
@@ -374,7 +460,7 @@ def summarize_node(state: TravelPlannerState) -> dict:
         current_plan_info = _format_current_plan(state.trip_plan)
     
     selection_prompt = _build_selection_prompt(
-        user_request=user_request,
+        user_request=state.messages[0].content if state.messages else "",
         user_feedback=user_feedback,
         is_modification=is_modification,
         attractions_info=attractions_info,
@@ -405,23 +491,7 @@ def summarize_node(state: TravelPlannerState) -> dict:
         weather_info=weather_info,
     )
     
-    detailed_description = _generate_detailed_description(
-        trip_plan=trip_plan,
-        sub_agent_results=sub_agent_results,
-        user_request=user_request,
-        model=model,
-    )
-    
-    trip_plan.overall_suggestions = detailed_description
-    
-    return {
-        "trip_plan": trip_plan,
-        "messages": [AIMessage(content=detailed_description)],
-        "notes": {
-            **state.notes,
-            "plan_summary": detailed_description[:800] if detailed_description else "",
-        },
-    }
+    return trip_plan
 
 def should_continue(state: TravelPlannerState) -> Literal["execute", "summarize"]:
     """判断是否还有待执行的任务"""
@@ -750,3 +820,53 @@ def _format_trip_plan_for_summary(trip_plan) -> str:
         info_lines.append("")
     
     return "\n".join(info_lines)
+
+
+def _build_selection_query(state, task_description: str) -> str:
+    """构建 selection 任务的查询文本
+    
+    Args:
+        state: 当前状态
+        task_description: 任务描述
+        
+    Returns:
+        完整的查询文本
+    """
+    trip_request = state.trip_request
+    user_request = state.messages[0].content if state.messages else ""
+    user_feedback = state.user_feedback
+    attraction_pool = state.attraction_pool
+    hotel_pool = state.hotel_pool
+    is_modification = state.notes.get("user_decision") == "modify"
+    
+    query_parts = []
+    
+    query_parts.append(f"**用户原始需求：**{user_request}")
+    
+    if trip_request:
+        query_parts.append(f"**目的地：**{trip_request.city}")
+        query_parts.append(f"**旅行日期：**{trip_request.start_date} 至 {trip_request.end_date}")
+        query_parts.append(f"**旅行天数：**{trip_request.travel_days}天")
+    
+    if is_modification and user_feedback:
+        query_parts.append(f"**用户修改意见：**{user_feedback}")
+    
+    if state.trip_plan and is_modification:
+        current_plan_info = _format_current_plan(state.trip_plan)
+        query_parts.append(f"**当前行程安排：**\n{current_plan_info}")
+    
+    if attraction_pool:
+        attractions_info = _format_attractions_for_selection(attraction_pool)
+        query_parts.append(f"**可选景点池：**\n{attractions_info}")
+    else:
+        query_parts.append("**可选景点池：**暂无景点")
+    
+    if hotel_pool:
+        hotels_info = _format_hotels_for_selection(hotel_pool)
+        query_parts.append(f"**可选酒店池：**\n{hotels_info}")
+    else:
+        query_parts.append("**可选酒店池：**暂无酒店")
+    
+    query_parts.append(f"**任务描述：**{task_description}")
+    
+    return "\n\n".join(query_parts)

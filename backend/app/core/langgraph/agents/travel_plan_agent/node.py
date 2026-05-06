@@ -36,7 +36,7 @@ from app.schemas import (
     DayPlan
 )
 
-from app.core.prompts import PLAN_MODEL_PROMPT, SUMMARY_PROMPT
+from app.core.prompts import PLAN_MODEL_PROMPT, SUMMARY_PROMPT, SELECTION_PROMPT
 
 def get_plan_model():
     """获取规划模型"""
@@ -694,30 +694,6 @@ def _build_trip_plan_from_selection(
     return trip_plan
 
 
-SELECTION_PROMPT = """你是一个专业的旅游规划师，负责根据用户需求选择合适的景点和酒店。
-
-你的任务：
-1. 分析用户的原始需求和偏好
-2. 如果有用户修改意见，理解用户的意图（例如："换一个景点"、"不喜欢这个酒店"）
-3. 从可选景点和酒店中，选择最合适的组合
-4. 为每天分配2-3个景点，确保行程合理
-5. 选择一个合适的酒店（如果需要住宿）
-
-选择原则：
-- 优先满足用户的明确需求
-- 考虑景点的评分、类型、门票价格
-- 考虑酒店的位置、价格、评分
-- 确保行程的合理性（避免过于拥挤或松散）
-- 如果用户表达不满，避免选择用户不满意的景点/酒店
-
-输出格式：
-- days: 每天的景点选择（包含日期、景点名称列表、选择理由）
-- hotel: 酒店选择（包含酒店名称、选择理由）
-- overall_suggestions: 整体建议和说明
-
-请根据用户需求，做出合理的选择。"""
-
-
 def _generate_detailed_description(
     trip_plan,
     sub_agent_results: list,
@@ -735,7 +711,6 @@ def _generate_detailed_description(
     Returns:
         详细的旅游规划文本
     """
-    from app.core.prompts import SUMMARY_PROMPT
     
     allocation_text = _format_trip_plan_for_summary(trip_plan)
     

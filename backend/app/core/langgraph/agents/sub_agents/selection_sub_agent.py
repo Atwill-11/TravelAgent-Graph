@@ -1,7 +1,7 @@
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.travel.selection import DayPlanSelection
-from app.core.prompts import SELECTION_AGENT_PROMPT
+from app.core.prompts import SELECTION_PROMPT
 
 from langchain_qwq import ChatQwen
 from langchain.tools import tool
@@ -56,7 +56,7 @@ async def call_selection_sub_agent(query: str) -> dict:
     
     try:
         prompt = ChatPromptTemplate.from_messages([
-            ("system", SELECTION_AGENT_PROMPT),
+            ("system", SELECTION_PROMPT),
             ("human", "{query}"),
         ])
         

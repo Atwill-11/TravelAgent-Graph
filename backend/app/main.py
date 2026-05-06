@@ -147,28 +147,54 @@ async def root(request: Request):
 @app.get("/health")
 async def health_check(request: Request) -> Dict[str, Any]:
     """健康检查接口（包含环境变量）
+    
+    检查应用核心组件的健康状态，包括：
+    - 数据库连接（DatabaseService）
+    - psycopg连接池（AsyncConnectionPool）
+    - LangGraph检查点器（AsyncPostgresSaver）
+    
     Returns:
         Dict[str, Any]: 健康检查结果
     """
-    logger.info("health_check_called（包含环境变量）")
+    logger.info("health_check_called")
 
-    # 检查数据库连接
+    components = {"api": "healthy"}
+    all_healthy = True
+
     try:
         rm = get_resource_manager()
-        db_healthy = await rm.db_service.health_check()
+
+        db_healthy = rm.db_service is not None and await rm.db_service.health_check()
+        components["database"] = "healthy" if db_healthy else "unhealthy"
+        if not db_healthy:
+            all_healthy = False
+
+        pool_healthy = rm.connection_pool is not None and not rm.connection_pool.closed
+        components["connection_pool"] = "healthy" if pool_healthy else "unhealthy"
+        if not pool_healthy:
+            all_healthy = False
+
+        checkpointer_healthy = rm.checkpointer is not None
+        components["checkpointer"] = "healthy" if checkpointer_healthy else "unhealthy"
+        if not checkpointer_healthy:
+            all_healthy = False
+
     except RuntimeError:
-        db_healthy = await database_service.health_check()
+        all_healthy = False
+        components["database"] = "unhealthy"
+        components["connection_pool"] = "unhealthy"
+        components["checkpointer"] = "unhealthy"
+        logger.warning("ResourceManager未初始化，应用可能未正确启动")
 
     response = {
-        "status": "healthy" if db_healthy else "degraded",
+        "status": "healthy" if all_healthy else "degraded",
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT.value,
-        "components": {"api": "healthy", "database": "healthy" if db_healthy else "unhealthy"},
+        "components": components,
         "timestamp": datetime.now().isoformat(),
     }
 
-    # 如果数据库连接失败，设置为503 Service Unavailable
-    status_code = status.HTTP_200_OK if db_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+    status_code = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
 
     return JSONResponse(content=response, status_code=status_code)
 

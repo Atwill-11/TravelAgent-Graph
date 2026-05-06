@@ -69,12 +69,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.core.config import settings
 from app.core.logging import logger
 
-
-KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
-
-EMBEDDING_MODEL = "text-embedding-v4"
-EMBEDDING_DIMS = 1024
-
+KNOWLEDGE_BASE_DIR = Path(__file__).parent / settings.KNOWLEDGE_BASE_DIR
+EMBEDDING_MODEL = settings.EMBEDDING_MODEL
+EMBEDDING_DIMS = settings.EMBEDDING_DIMS
 
 class RetrievalStrategy(Protocol):
     """检索策略协议接口，预留扩展。

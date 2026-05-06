@@ -157,8 +157,7 @@ class ResourceManager:
         统一创建DashScopeEmbeddings实例，供TravelMemoryManager和RAGPipeline共享，
         避免重复创建相同配置的嵌入模型。
         """
-        from app.core.langgraph.rag.pipeline import EMBEDDING_MODEL
-
+        EMBEDDING_MODEL = settings.EMBEDDING_MODEL
         try:
             if settings.DASHSCOPE_API_KEY:
                 self.embeddings = DashScopeEmbeddings(

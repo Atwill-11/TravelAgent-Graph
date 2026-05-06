@@ -206,7 +206,23 @@ class Settings:
         self.AMAP_API_KEY = os.getenv("AMAP_API_KEY", "")
         self.VITE_AMAP_WEB_JS_KEY = os.getenv("VITE_AMAP_WEB_JS_KEY", "")
 
+        # embedding模型设置
+        self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+        self.EMBEDDING_DIMS = int(os.getenv("EMBEDDING_DIMS", "1024"))
+        
         # RAG 知识库检索设置
+        knowledge_base_dir = os.getenv("KNOWLEDGE_BASE_DIR", "")
+        if knowledge_base_dir:
+            # 如果环境变量设置了路径，转换为绝对路径
+            knowledge_base_path = Path(knowledge_base_dir)
+            if not knowledge_base_path.is_absolute():
+                # 相对路径：相对于项目根目录（backend目录）
+                base_dir = Path(__file__).parent.parent.parent  # 从 config.py 回到 backend/
+                knowledge_base_path = base_dir / knowledge_base_path
+            self.KNOWLEDGE_BASE_DIR = knowledge_base_path
+        else:
+            # 未设置环境变量，使用 None，让 pipeline.py 使用默认路径
+            self.KNOWLEDGE_BASE_DIR = None
         self.RAG_COLLECTION_NAME = os.getenv("RAG_COLLECTION_NAME", "travel_knowledge")
         self.RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))
         self.RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))

@@ -16,9 +16,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.langgraph.rag.pipeline import EMBEDDING_MODEL
 from app.schemas.travel.request import TripRequest
 
+EMBEDDING_MODEL = settings.EMBEDDING_MODEL
 
 class TravelMemoryManager:
     """旅游规划长期记忆管理器，使用 AsyncPostgresStore + 向量搜索实现。"""

@@ -55,8 +55,9 @@ RAG Pipeline 各环节说明：
 """
 
 import uuid
+import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import DashScopeEmbeddings
@@ -64,12 +65,15 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_postgres import PGEngine, PGVectorStore
 from langchain_qwq import ChatQwen
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
+from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.models.rag_document import RAGDocument
 
-KNOWLEDGE_BASE_DIR = Path(__file__).parent / settings.KNOWLEDGE_BASE_DIR
+KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
+
 EMBEDDING_MODEL = settings.EMBEDDING_MODEL
 EMBEDDING_DIMS = settings.EMBEDDING_DIMS
 
@@ -155,6 +159,35 @@ class RAGPipeline:
             logger.info("RAG嵌入模型初始化完成", model=EMBEDDING_MODEL, dims=EMBEDDING_DIMS)
         return self._embeddings
 
+    def _get_markdown_splitter(self) -> MarkdownHeaderTextSplitter:
+        """获取Markdown标题分块器。
+
+        MarkdownHeaderTextSplitter按照Markdown标题结构分块，
+        保留文档的层次结构，并将标题信息存储在metadata中。
+
+        旅游攻略文档通常包含以下标题层次：
+        - # 城市名（一级标题）
+        - ## 景点/美食/住宿等分类（二级标题）
+        - ### 具体推荐（三级标题）
+
+        分块后的metadata示例：
+        {
+            'Header 1': '成都',
+            'Header 2': '美食推荐',
+            'Header 3': '火锅'
+        }
+        """
+        headers_to_split_on = [
+            ("#", "Header 1"),
+            ("##", "Header 2"),
+            ("###", "Header 3"),
+        ]
+        return MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on,
+            strip_headers=False,
+            return_each_line=False,
+        )
+
     def _get_splitter(self) -> RecursiveCharacterTextSplitter:
         """获取文本分块器。
 
@@ -233,34 +266,56 @@ class RAGPipeline:
     def split_documents(self, documents: List[Document]) -> List[Document]:
         """将文档分割为文本块。
 
-        使用RecursiveCharacterTextSplitter进行递归分块，
-        确保每个文本块在语义上尽可能完整。
+        对于Markdown文档，采用两阶段分块策略：
+        1. 使用MarkdownHeaderTextSplitter按标题结构分块，保留层次信息
+        2. 对过大的分块使用RecursiveCharacterTextSplitter进一步分割
+
+        这种方法的优势：
+        - 保留Markdown文档的结构化信息
+        - 标题信息存储在metadata中，提升检索精度
+        - 仍然控制块大小在合理范围内
 
         分块过程：
-        1. 按段落分割，保持段落的语义完整性
-        2. 过大的段落进一步按句子分割
-        3. 仍然过大的句子按字符分割
-        4. 相邻块之间保留overlap区域，避免信息截断
+        1. Markdown标题分块：按#、##、###标题分组
+        2. 大小控制：对超过chunk_size的分块进一步分割
+        3. 元数据保留：保留原始文档的元数据和标题层次信息
 
         Args:
             documents: 原始文档列表
 
         Returns:
-            分块后的文档列表，每个块继承原始文档的元数据
+            分块后的文档列表，每个块继承原始文档的元数据和标题信息
         """
-        splitter = self._get_splitter()
-        chunks = splitter.split_documents(documents)
+        markdown_splitter = self._get_markdown_splitter()
+        text_splitter = self._get_splitter()
 
-        for chunk in chunks:
+        all_chunks = []
+
+        for doc in documents:
+            md_chunks = markdown_splitter.split_text(doc.page_content)
+
+            for md_chunk in md_chunks:
+                md_chunk.metadata.update(doc.metadata)
+
+                if len(md_chunk.page_content) > settings.RAG_CHUNK_SIZE:
+                    smaller_chunks = text_splitter.split_documents([md_chunk])
+                    for chunk in smaller_chunks:
+                        chunk.metadata.update(md_chunk.metadata)
+                        all_chunks.append(chunk)
+                else:
+                    all_chunks.append(md_chunk)
+
+        for chunk in all_chunks:
             chunk.id = str(uuid.uuid4())
 
         logger.info(
             "文档分块完成",
             original_count=len(documents),
-            chunk_count=len(chunks),
-            avg_chunk_size=sum(len(c.page_content) for c in chunks) // max(len(chunks), 1),
+            chunk_count=len(all_chunks),
+            avg_chunk_size=sum(len(c.page_content) for c in all_chunks) // max(len(all_chunks), 1),
+            markdown_chunks=len([c for c in all_chunks if 'Header 1' in c.metadata]),
         )
-        return chunks
+        return all_chunks
 
     async def _init_vectorstore_table(self, overwrite_existing: bool = False) -> None:
         """初始化向量存储表结构。
@@ -393,6 +448,7 @@ class RAGPipeline:
         初始化流程：
         1. 如果force_rebuild=True：删除旧表，加载文档→分块→嵌入→存储
         2. 否则：连接已有向量库，如果表为空则自动加载数据
+        3. 更新文档跟踪表
 
         建议在应用启动时调用此方法进行初始化。
 
@@ -417,6 +473,8 @@ class RAGPipeline:
                     return
 
                 self._vector_store = await self.build_vector_store(chunks)
+
+                self._update_document_tracking(chunks, clear_existing=True)
             else:
                 self._vector_store = await self.connect_vector_store()
 
@@ -438,6 +496,9 @@ class RAGPipeline:
                         return
 
                     await self._vector_store.aadd_documents(chunks)
+
+                    self._update_document_tracking(chunks, clear_existing=False)
+
                     logger.info(
                         "文档加载完成",
                         chunk_count=len(chunks),
@@ -450,6 +511,61 @@ class RAGPipeline:
             logger.error("RAG流水线初始化失败", error=str(e), exc_info=True)
             self._initialized = False
             raise
+
+    def _update_document_tracking(
+        self,
+        chunks: List[Document],
+        clear_existing: bool = False
+    ) -> None:
+        """更新文档跟踪表。
+
+        在初始化或重建知识库后，更新数据库中的文档跟踪记录。
+
+        Args:
+            chunks: 文档分块列表
+            clear_existing: 是否清空现有记录（用于重建场景）
+        """
+        try:
+            with self._get_db_session() as session:
+                if clear_existing:
+                    all_docs = session.exec(select(RAGDocument)).all()
+                    for doc in all_docs:
+                        session.delete(doc)
+                    session.commit()
+
+                directory = KNOWLEDGE_BASE_DIR
+                for file_path in directory.glob("**/*.md"):
+                    filename = file_path.stem
+                    relative_path = file_path.relative_to(directory)
+                    file_hash = self._compute_file_hash(file_path)
+                    file_size = file_path.stat().st_size
+
+                    file_chunks = [c for c in chunks if c.metadata.get("city") == filename]
+
+                    existing_doc = session.exec(
+                        select(RAGDocument).where(RAGDocument.filename == filename)
+                    ).first()
+
+                    if existing_doc:
+                        existing_doc.file_hash = file_hash
+                        existing_doc.chunk_count = len(file_chunks)
+                        existing_doc.file_size = file_size
+                        session.add(existing_doc)
+                    else:
+                        new_doc = RAGDocument(
+                            filename=filename,
+                            file_path=str(relative_path),
+                            file_hash=file_hash,
+                            chunk_count=len(file_chunks),
+                            file_size=file_size,
+                        )
+                        session.add(new_doc)
+
+                session.commit()
+                logger.info("文档跟踪表更新完成")
+
+        except Exception as e:
+            logger.error("更新文档跟踪表失败", error=str(e), exc_info=True)
 
     async def aretrieve(
         self,
@@ -639,6 +755,334 @@ class RAGPipeline:
             original_count=len(documents),
             chunk_count=len(chunks),
         )
+
+    def _compute_file_hash(self, file_path: Path) -> str:
+        """计算文件的MD5哈希值。
+
+        用于检测文件内容是否发生变化。
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            文件内容的MD5哈希值（十六进制字符串）
+        """
+        hasher = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _get_db_session(self) -> Session:
+        """获取数据库会话。
+
+        优先从ResourceManager获取DatabaseService，
+        如果未初始化则抛出异常。
+
+        Returns:
+            Session: SQLModel会话实例
+
+        Raises:
+            RuntimeError: 如果ResourceManager未初始化
+        """
+        from app.services.resource_manager import get_resource_manager
+        rm = get_resource_manager()
+        if rm.db_service is None:
+            raise RuntimeError("数据库服务未初始化")
+        return rm.db_service.get_session_maker()
+
+    def get_loaded_documents(self) -> List[RAGDocument]:
+        """获取已加载到RAG知识库的文档列表。
+
+        Returns:
+            已加载文档的列表
+        """
+        try:
+            with self._get_db_session() as session:
+                statement = select(RAGDocument).order_by(RAGDocument.created_at.desc())
+                documents = session.exec(statement).all()
+                return list(documents)
+        except Exception as e:
+            logger.error("获取已加载文档列表失败", error=str(e), exc_info=True)
+            return []
+
+    def scan_new_documents(self, docs_dir: Optional[str] = None) -> Tuple[List[Path], List[Path]]:
+        """扫描knowledge_base目录，找出新文档和已变化的文档。
+
+        扫描流程：
+        1. 遍历knowledge_base目录下的所有.md文件
+        2. 对比数据库中的记录，找出：
+           - 新增的文件（数据库中不存在）
+           - 已变化的文件（哈希值不匹配）
+
+        Args:
+            docs_dir: 文档目录路径，默认为knowledge_base目录
+
+        Returns:
+            (new_files, changed_files): 新文件列表和已变化文件列表
+        """
+        directory = Path(docs_dir) if docs_dir else KNOWLEDGE_BASE_DIR
+
+        if not directory.exists():
+            logger.warning("知识库目录不存在", directory=str(directory))
+            return [], []
+
+        all_files = list(directory.glob("**/*.md"))
+        new_files = []
+        changed_files = []
+
+        try:
+            with self._get_db_session() as session:
+                for file_path in all_files:
+                    relative_path = file_path.relative_to(directory)
+                    filename = file_path.stem
+
+                    existing_doc = session.exec(
+                        select(RAGDocument).where(RAGDocument.filename == filename)
+                    ).first()
+
+                    if existing_doc is None:
+                        new_files.append(file_path)
+                    else:
+                        current_hash = self._compute_file_hash(file_path)
+                        if current_hash != existing_doc.file_hash:
+                            changed_files.append(file_path)
+
+            logger.info(
+                "文档扫描完成",
+                total_files=len(all_files),
+                new_files=len(new_files),
+                changed_files=len(changed_files),
+            )
+            return new_files, changed_files
+
+        except Exception as e:
+            logger.error("扫描新文档失败", error=str(e), exc_info=True)
+            return [], []
+
+    async def add_documents_incremental(
+        self,
+        docs_dir: Optional[str] = None,
+        include_changed: bool = True
+    ) -> Dict[str, Any]:
+        """增量添加新文档到RAG知识库。
+
+        流程：
+        1. 扫描knowledge_base目录，找出新文档和已变化的文档
+        2. 加载并分块这些文档
+        3. 将分块后的文档添加到向量库
+        4. 更新数据库中的文档跟踪记录
+
+        Args:
+            docs_dir: 文档目录路径，默认为knowledge_base目录
+            include_changed: 是否包含已变化的文档（默认True）
+
+        Returns:
+            操作结果统计信息
+        """
+        if not self.is_initialized:
+            await self.initialize()
+
+        if self._vector_store is None:
+            logger.error("向量存储不可用")
+            return {
+                "success": False,
+                "message": "向量存储不可用",
+                "added_count": 0,
+                "updated_count": 0,
+            }
+
+        new_files, changed_files = self.scan_new_documents(docs_dir)
+        files_to_add = new_files.copy()
+        if include_changed:
+            files_to_add.extend(changed_files)
+
+        if not files_to_add:
+            logger.info("没有新文档需要添加")
+            return {
+                "success": True,
+                "message": "没有新文档需要添加",
+                "added_count": 0,
+                "updated_count": 0,
+            }
+
+        documents = []
+        for file_path in files_to_add:
+            try:
+                loader = TextLoader(str(file_path), encoding="utf-8")
+                docs = loader.load()
+                for doc in docs:
+                    doc.metadata["source"] = str(file_path)
+                    doc.metadata["city"] = file_path.stem
+                documents.extend(docs)
+            except Exception as e:
+                logger.error("加载文档失败", file_path=str(file_path), error=str(e))
+
+        if not documents:
+            logger.warning("未能加载任何文档")
+            return {
+                "success": False,
+                "message": "未能加载任何文档",
+                "added_count": 0,
+                "updated_count": 0,
+            }
+
+        chunks = self.split_documents(documents)
+        await self._vector_store.aadd_documents(chunks)
+
+        try:
+            with self._get_db_session() as session:
+                for file_path in files_to_add:
+                    filename = file_path.stem
+                    relative_path = file_path.relative_to(KNOWLEDGE_BASE_DIR)
+                    file_hash = self._compute_file_hash(file_path)
+                    file_size = file_path.stat().st_size
+
+                    file_chunks = [c for c in chunks if c.metadata.get("city") == filename]
+
+                    existing_doc = session.exec(
+                        select(RAGDocument).where(RAGDocument.filename == filename)
+                    ).first()
+
+                    if existing_doc:
+                        existing_doc.file_hash = file_hash
+                        existing_doc.chunk_count = len(file_chunks)
+                        existing_doc.file_size = file_size
+                        session.add(existing_doc)
+                    else:
+                        new_doc = RAGDocument(
+                            filename=filename,
+                            file_path=str(relative_path),
+                            file_hash=file_hash,
+                            chunk_count=len(file_chunks),
+                            file_size=file_size,
+                        )
+                        session.add(new_doc)
+
+                session.commit()
+
+            logger.info(
+                "增量文档添加完成",
+                total_files=len(files_to_add),
+                new_files=len(new_files),
+                changed_files=len(changed_files),
+                total_chunks=len(chunks),
+            )
+
+            return {
+                "success": True,
+                "message": f"成功添加 {len(new_files)} 个新文档，更新 {len(changed_files)} 个已变化文档",
+                "added_count": len(new_files),
+                "updated_count": len(changed_files),
+                "total_chunks": len(chunks),
+            }
+
+        except Exception as e:
+            logger.error("更新文档跟踪记录失败", error=str(e), exc_info=True)
+            return {
+                "success": False,
+                "message": f"更新文档跟踪记录失败: {str(e)}",
+                "added_count": 0,
+                "updated_count": 0,
+            }
+
+    async def rebuild_knowledge_base(self, docs_dir: Optional[str] = None) -> Dict[str, Any]:
+        """重建整个RAG知识库。
+
+        流程：
+        1. 删除向量库中的所有数据
+        2. 重新加载所有文档
+        3. 重新构建向量库
+        4. 清空并重建文档跟踪表
+
+        Args:
+            docs_dir: 文档目录路径，默认为knowledge_base目录
+
+        Returns:
+            操作结果统计信息
+        """
+        try:
+            directory = Path(docs_dir) if docs_dir else KNOWLEDGE_BASE_DIR
+
+            if not directory.exists():
+                return {
+                    "success": False,
+                    "message": f"知识库目录不存在: {directory}",
+                    "document_count": 0,
+                    "chunk_count": 0,
+                }
+
+            logger.info("开始重建RAG知识库...")
+
+            documents = self.load_documents(str(directory))
+            if not documents:
+                return {
+                    "success": False,
+                    "message": "未加载到任何文档",
+                    "document_count": 0,
+                    "chunk_count": 0,
+                }
+
+            chunks = self.split_documents(documents)
+            self._vector_store = await self.build_vector_store(chunks)
+
+            try:
+                with self._get_db_session() as session:
+                    session.exec(select(RAGDocument))
+                    all_docs = session.exec(select(RAGDocument)).all()
+                    for doc in all_docs:
+                        session.delete(doc)
+                    session.commit()
+
+                    for file_path in directory.glob("**/*.md"):
+                        filename = file_path.stem
+                        relative_path = file_path.relative_to(directory)
+                        file_hash = self._compute_file_hash(file_path)
+                        file_size = file_path.stat().st_size
+
+                        file_chunks = [c for c in chunks if c.metadata.get("city") == filename]
+
+                        rag_doc = RAGDocument(
+                            filename=filename,
+                            file_path=str(relative_path),
+                            file_hash=file_hash,
+                            chunk_count=len(file_chunks),
+                            file_size=file_size,
+                        )
+                        session.add(rag_doc)
+
+                    session.commit()
+
+                logger.info(
+                    "RAG知识库重建完成",
+                    document_count=len(documents),
+                    chunk_count=len(chunks),
+                )
+
+                return {
+                    "success": True,
+                    "message": "知识库重建成功",
+                    "document_count": len(documents),
+                    "chunk_count": len(chunks),
+                }
+
+            except Exception as e:
+                logger.error("更新文档跟踪记录失败", error=str(e), exc_info=True)
+                return {
+                    "success": False,
+                    "message": f"更新文档跟踪记录失败: {str(e)}",
+                    "document_count": len(documents),
+                    "chunk_count": len(chunks),
+                }
+
+        except Exception as e:
+            logger.error("重建知识库失败", error=str(e), exc_info=True)
+            return {
+                "success": False,
+                "message": f"重建知识库失败: {str(e)}",
+                "document_count": 0,
+                "chunk_count": 0,
+            }
 
     async def close(self):
         """清理RAG流水线资源。

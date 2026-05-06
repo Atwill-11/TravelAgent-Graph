@@ -97,12 +97,24 @@ async def _init_amap_client_and_tools(
 
 def _get_client_and_tools() -> tuple[MultiServerMCPClient, MCPToolSet]:
     """
-    延迟初始化并缓存 client 与工具集合。
-    使用线程池来避免事件循环冲突问题。
+    获取MCP客户端与工具集合。
+    优先从ResourceManager获取（由生命周期管理器初始化），
+    如果ResourceManager未初始化则回退到本地懒加载模式。
     """
     global _amap_mcp_client, _amap_tools
+
     if _amap_mcp_client is not None and _amap_tools is not None:
         return _amap_mcp_client, _amap_tools
+
+    try:
+        from app.services.resource_manager import get_resource_manager
+        rm = get_resource_manager()
+        if rm.mcp_client is not None and rm.mcp_toolset is not None:
+            _amap_mcp_client = rm.mcp_client
+            _amap_tools = rm.mcp_toolset
+            return _amap_mcp_client, _amap_tools
+    except RuntimeError:
+        pass
 
     amap_api_key = settings.AMAP_API_KEY
 
@@ -187,32 +199,41 @@ def get_amap_service() -> AmapService:
 async def get_mcp_tools_async() -> List[Any]:
     """
     异步获取 MCP 工具列表（LangChain Tool 对象列表）。
-    
+    优先从ResourceManager获取，如果未初始化则本地懒加载。
+
     Returns:
         List[BaseTool]: LangChain Tool 实例列表，可直接用于 LangGraph Agent。
-    
-    使用示例:
-        tools = await get_mcp_tools_async()
-        agent = create_react_agent(llm, tools)
     """
     global _amap_mcp_client, _amap_tools
-    
-    if _amap_tools is None:
-        amap_api_key = settings.AMAP_API_KEY
-        if not amap_api_key:
-            raise ValueError("高德地图API Key未配置,请在.env文件中设置AMAP_API_KEY")
-        
-        client, tools = await _init_amap_client_and_tools(
-            server_command=["uvx", "amap-mcp-server"],
-            env={"AMAP_MAPS_API_KEY": amap_api_key},
-            tool_name_prefix=False,
-        )
-        _amap_mcp_client = client
-        _amap_tools = MCPToolSet(tools)
-        
-        logger.info("✅ 高德地图MCP客户端初始化成功")
-        logger.info(f"  工具数量: {len(_amap_tools.list_names())}")
-    
+
+    if _amap_tools is not None:
+        return [t._tool for t in _amap_tools._tools]
+
+    try:
+        from app.services.resource_manager import get_resource_manager
+        rm = get_resource_manager()
+        if rm.mcp_toolset is not None:
+            _amap_mcp_client = rm.mcp_client
+            _amap_tools = rm.mcp_toolset
+            return [t._tool for t in _amap_tools._tools]
+    except RuntimeError:
+        pass
+
+    amap_api_key = settings.AMAP_API_KEY
+    if not amap_api_key:
+        raise ValueError("高德地图API Key未配置,请在.env文件中设置AMAP_API_KEY")
+
+    client, tools = await _init_amap_client_and_tools(
+        server_command=["uvx", "amap-mcp-server"],
+        env={"AMAP_MAPS_API_KEY": amap_api_key},
+        tool_name_prefix=False,
+    )
+    _amap_mcp_client = client
+    _amap_tools = MCPToolSet(tools)
+
+    logger.info("✅ 高德地图MCP客户端初始化成功")
+    logger.info(f"  工具数量: {len(_amap_tools.list_names())}")
+
     return [t._tool for t in _amap_tools._tools]
 
 

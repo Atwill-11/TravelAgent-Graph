@@ -24,7 +24,7 @@ from app.core.logging import (
     bind_context,
     logger,
 )
-from app.core.langgraph.agents.travel_plan_agent.graph import _get_memory_manager
+from app.services.resource_manager import get_resource_manager
 from app.models.session import Session
 from app.models.user import User
 from app.schemas import (
@@ -33,7 +33,7 @@ from app.schemas import (
     UserCreate,
     UserResponse,
 )
-from app.services.database import DatabaseService
+
 from app.utils.auth import (
     create_access_token,
     verify_token,
@@ -46,7 +46,18 @@ from app.utils.sanitization import (
 
 router = APIRouter()
 security = HTTPBearer()
-db_service = DatabaseService()
+
+
+def _get_db_service():
+    """获取数据库服务实例。"""
+    try:
+        rm = get_resource_manager()
+        if rm.db_service:
+            return rm.db_service
+    except RuntimeError:
+        pass
+    from app.services.database import database_service
+    return database_service
 
 
 async def get_current_user(
@@ -78,7 +89,7 @@ async def get_current_user(
 
         # 验证用户在数据库中是否存在
         user_id_int = int(user_id)
-        user = await db_service.get_user(user_id_int)
+        user = await _get_db_service().get_user(user_id_int)
         if user is None:
             logger.error("user_not_found（用户不存在）", user_id=user_id_int)
             raise HTTPException(
@@ -131,7 +142,7 @@ async def get_current_session(
         session_id = sanitize_string(session_id)
 
         # 验证会话在数据库中是否存在
-        session = await db_service.get_session(session_id)
+        session = await _get_db_service().get_session(session_id)
         if session is None:
             logger.error("session_not_found（会话不存在）", session_id=session_id)
             raise HTTPException(
@@ -174,11 +185,11 @@ async def register_user(request: Request, user_data: UserCreate):
         validate_password_strength(password)
 
         # 检查用户是否已存在
-        if await db_service.get_user_by_email(sanitized_email):
+        if await _get_db_service().get_user_by_email(sanitized_email):
             raise HTTPException(status_code=400, detail="Email already registered（邮箱已注册）")
 
         # 创建用户
-        user = await db_service.create_user(email=sanitized_email, password=User.hash_password(password))
+        user = await _get_db_service().create_user(email=sanitized_email, password=User.hash_password(password))
 
         # 创建访问 token
         token = create_access_token(str(user.id))
@@ -221,7 +232,7 @@ async def login(
                 detail="Unsupported grant type. Must be 'password'",
             )
 
-        user = await db_service.get_user_by_email(username)
+        user = await _get_db_service().get_user_by_email(username)
         if not user or not user.verify_password(password):
             raise HTTPException(
                 status_code=401,
@@ -255,7 +266,7 @@ async def create_session(user: User = Depends(get_current_user), name: str = For
         sanitized_name = sanitize_string(name) if name else ""
 
         # 在数据库中创建会话记录
-        session = await db_service.create_session(session_id, user.id, sanitized_name)
+        session = await _get_db_service().create_session(session_id, user.id, sanitized_name)
 
         # 为该会话创建访问 token
         token = create_access_token(session_id)
@@ -294,12 +305,12 @@ async def update_session_name(
         sanitized_name = sanitize_string(name)
 
         # 验证会话是否属于当前用户
-        session = await db_service.get_session(sanitized_session_id)
+        session = await _get_db_service().get_session(sanitized_session_id)
         if session is None or session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Cannot modify other sessions")
 
         # 更新会话名称
-        updated_session = await db_service.update_session_name(sanitized_session_id, sanitized_name)
+        updated_session = await _get_db_service().update_session_name(sanitized_session_id, sanitized_name)
 
         # 创建新 token
         token = create_access_token(sanitized_session_id)
@@ -326,20 +337,22 @@ async def delete_session(session_id: str, user: User = Depends(get_current_user)
         sanitized_session_id = sanitize_string(session_id)
 
         # 验证会话是否属于当前用户
-        session = await db_service.get_session(sanitized_session_id)
+        session = await _get_db_service().get_session(sanitized_session_id)
         if session is None or session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Cannot delete other sessions")
 
         # 删除会话相关的历史规划记忆
         try:
-            memory_manager = await _get_memory_manager()
-            if memory_manager:
-                await memory_manager.delete_session_memories(str(user.id), sanitized_session_id)
+            rm = get_resource_manager()
+            if rm.memory_manager:
+                await rm.memory_manager.delete_session_memories(str(user.id), sanitized_session_id)
+        except RuntimeError:
+            pass
         except Exception as e:
             logger.warning("删除会话记忆失败，继续删除会话", session_id=sanitized_session_id, error=str(e))
 
         # 删除会话
-        await db_service.delete_session(sanitized_session_id)
+        await _get_db_service().delete_session(sanitized_session_id)
 
         logger.info("session_deleted（会话删除成功）", session_id=session_id, user_id=user.id)
     except ValueError as ve:
@@ -358,7 +371,7 @@ async def get_user_sessions(user: User = Depends(get_current_user)):
         List[SessionResponse]: 会话信息列表。
     """
     try:
-        sessions = await db_service.get_user_sessions(user.id)
+        sessions = await _get_db_service().get_user_sessions(user.id)
         return [
             SessionResponse(
                 session_id=sanitize_string(session.id),

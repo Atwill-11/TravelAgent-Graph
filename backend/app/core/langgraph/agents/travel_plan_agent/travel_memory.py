@@ -16,20 +16,21 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.langgraph.rag.pipeline import EMBEDDING_MODEL
 from app.schemas.travel.request import TripRequest
 
 
 class TravelMemoryManager:
     """旅游规划长期记忆管理器，使用 AsyncPostgresStore + 向量搜索实现。"""
     
-    def __init__(self):
+    def __init__(self, embeddings: Optional[DashScopeEmbeddings] = None):
         self.store: Optional[AsyncPostgresStore] = None
         self._connection_pool: Optional[AsyncConnectionPool] = None
-        self.embeddings = DashScopeEmbeddings(
+        self.embeddings = embeddings or DashScopeEmbeddings(
             dashscope_api_key=settings.DASHSCOPE_API_KEY,
-            model="text-embedding-v4"
+            model=EMBEDDING_MODEL
         )
-        logger.info("TravelMemoryManager 初始化成功", model="text-embedding-v4")
+        logger.info("TravelMemoryManager 初始化成功", model=EMBEDDING_MODEL)
 
     async def _get_store(self, connection_pool: AsyncConnectionPool) -> AsyncPostgresStore:
         """获取或创建存储实例（启用向量索引）。"""

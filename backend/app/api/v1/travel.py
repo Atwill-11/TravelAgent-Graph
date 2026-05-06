@@ -22,7 +22,7 @@ from app.core.langgraph.agents.travel_plan_agent.node import (
 from app.models.session import Session
 from app.api.v1.auth import get_current_session
 from app.core.logging import logger
-from app.services.database import database_service
+from app.services.resource_manager import get_resource_manager
 
 router = APIRouter()
 
@@ -243,7 +243,7 @@ async def plan_trip_stream(
     thread_id = f"{session.id}_{uuid.uuid4().hex[:8]}"
     
     try:
-        await database_service.update_session_thread_id(session.id, thread_id)
+        await get_resource_manager().db_service.update_session_thread_id(session.id, thread_id)
         logger.info("生成新的thread_id", session_id=session.id, thread_id=thread_id)
     except Exception as e:
         logger.error("更新session thread_id失败", error=str(e), session_id=session.id)
@@ -472,7 +472,7 @@ async def resume_trip_stream(
     
     if resume_request.action == "complete":
         try:
-            await database_service.update_session_thread_id(session.id, None)
+            await get_resource_manager().db_service.update_session_thread_id(session.id, None)
             logger.info("完成规划，清除thread_id", session_id=session.id, thread_id=thread_id)
         except Exception as e:
             logger.error("清除session thread_id失败", error=str(e), session_id=session.id)

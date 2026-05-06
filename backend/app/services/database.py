@@ -295,5 +295,21 @@ class DatabaseService:
             return False
 
 
-"""创建一个单例实例，用于数据库服务。"""
+    def close(self):
+        """关闭数据库服务，释放连接池资源。
+
+        应在应用关闭时调用，确保所有数据库连接被正确释放。
+        """
+        if self.engine is not None:
+            try:
+                self.engine.dispose()
+                logger.info("数据库连接池已释放")
+            except Exception as e:
+                logger.error("释放数据库连接池失败", error=str(e))
+
+
+"""创建一个单例实例，用于数据库服务。
+
+注意：该单例仅用于向后兼容，新代码应通过ResourceManager获取数据库服务。
+"""
 database_service = DatabaseService()

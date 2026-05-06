@@ -6,16 +6,15 @@
 3. 结果总结：汇总所有子任务结果，生成最终旅游规划
 4. 用户审阅：支持多轮对话，用户可修改旅行计划
 5. 长期记忆：存储和检索历史规划请求
-"""
 
-from urllib.parse import quote_plus
+资源管理：
+  所有资源（连接池、检查点器、记忆管理器等）由 ResourceManager 统一管理，
+  通过 get_resource_manager() 获取。不再使用模块级全局变量管理资源生命周期。
+"""
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
-from psycopg_pool import AsyncConnectionPool
 
 from app.schemas import (
     TravelPlannerState,
@@ -34,131 +33,48 @@ from .node import (
     route_after_review,
     NODE_DISPLAY_NAMES,
 )
-from .travel_memory import TravelMemoryManager
 
-from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 from langfuse import propagate_attributes
 from app.core.config import settings
 from app.core.logging import logger
+from app.services.resource_manager import get_resource_manager
 
-# lagfuse初始化
-langfuse = Langfuse(
-    public_key=settings.LANGFUSE_PUBLIC_KEY,
-    secret_key=settings.LANGFUSE_SECRET_KEY,
-    host=settings.LANGFUSE_HOST,
-)
-
-# 旅游记忆管理器（全局单例）
-_travel_memory_manager: TravelMemoryManager = None
-_connection_pool: AsyncConnectionPool = None
-_checkpointer: AsyncPostgresSaver = None
 _compiled_graph = None
 
 
-async def _get_memory_manager() -> TravelMemoryManager:
-    """获取或创建旅游记忆管理器实例。"""
-    global _travel_memory_manager, _connection_pool, _checkpointer
-    
-    if _travel_memory_manager is None:
-        try:
-            if _connection_pool is None:
-                connection_url = (
-                    "postgresql://"
-                    f"{quote_plus(settings.POSTGRES_USER)}:{quote_plus(settings.POSTGRES_PASSWORD)}"
-                    f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-                )
-                
-                _connection_pool = AsyncConnectionPool(
-                    connection_url,
-                    open=False,
-                    max_size=settings.POSTGRES_POOL_SIZE,
-                    kwargs={
-                        "autocommit": True,
-                        "connect_timeout": 5,
-                        "prepare_threshold": None,
-                    },
-                )
-                await _connection_pool.open()
-                logger.info("旅游规划连接池创建成功")
-            
-            _travel_memory_manager = TravelMemoryManager()
-            await _travel_memory_manager._get_store(_connection_pool)
-            logger.info("旅游记忆管理器初始化成功")
-            
-        except Exception as e:
-            logger.error("旅游记忆管理器初始化失败", error=str(e), exc_info=True)
-            _travel_memory_manager = None
-    
-    return _travel_memory_manager
+def _get_langfuse_handler() -> CallbackHandler:
+    """获取Langfuse回调处理器。
+
+    优先从ResourceManager获取共享实例，如果不可用则创建新实例。
+    """
+    try:
+        rm = get_resource_manager()
+        if rm.langfuse_handler:
+            return rm.langfuse_handler
+    except RuntimeError:
+        pass
+    return CallbackHandler()
 
 
-async def _get_checkpointer() -> AsyncPostgresSaver:
-    """获取或创建AsyncPostgresSaver检查点器实例。"""
-    global _checkpointer, _connection_pool
-    
-    if _checkpointer is None:
-        try:
-            if _connection_pool is None:
-                connection_url = (
-                    "postgresql://"
-                    f"{quote_plus(settings.POSTGRES_USER)}:{quote_plus(settings.POSTGRES_PASSWORD)}"
-                    f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-                )
-                
-                _connection_pool = AsyncConnectionPool(
-                    connection_url,
-                    open=False,
-                    max_size=settings.POSTGRES_POOL_SIZE,
-                    kwargs={
-                        "autocommit": True,
-                        "connect_timeout": 5,
-                        "prepare_threshold": None,
-                    },
-                )
-                await _connection_pool.open()
-                logger.info("旅游规划连接池创建成功（检查点器）")
-            
-            serde = JsonPlusSerializer(allowed_msgpack_modules={
-                ("app.schemas.agent.state", "TaskItem"),
-                ("app.schemas.agent.state", "SubAgentResult"),
-                ("app.schemas.travel.components", "Attraction"),
-                ("app.schemas.travel.components", "Hotel"),
-                ("app.schemas.travel.components", "Meal"),
-                ("app.schemas.travel.components", "Budget"),
-                ("app.schemas.travel.components", "DayPlan"),
-                ("app.schemas.travel.request", "TripRequest"),
-                ("app.schemas.travel.request", "POISearchRequest"),
-                ("app.schemas.travel.request", "RouteRequest"),
-                ("app.schemas.travel.plan", "TaskPlan"),
-                ("app.schemas.travel.plan", "PlanResult"),
-                ("app.schemas.travel.plan", "TripPlan"),
-                ("app.schemas.travel.plan", "TripPlanResponse"),
-                ("app.schemas.weather.qweather", "LocationInfo"),
-                ("app.schemas.weather.qweather", "QWeatherInfo"),
-                ("app.schemas.weather.qweather", "AirQualityInfo"),
-                ("app.schemas.weather.qweather", "TravelWeatherData"),
-                ("app.schemas.common.location", "Location"),
-                ("app.schemas.agent.travel_state", "TravelPlannerState"),
-                ("app.schemas.agent.travel_state", "TravelPlannerOutput"),
-                ("app.schemas.agent.context", "AgentContext"),
-                ("app.schemas.agent.context", "TravelContext"),
-                ("langchain_core.messages", "AIMessage"),
-                ("langchain_core.messages", "HumanMessage"),
-                ("langchain_core.messages", "BaseMessage"),
-                ("langchain_core.messages", "ToolMessage"),
-                ("langchain_core.messages", "SystemMessage"),
-            })
-            
-            _checkpointer = AsyncPostgresSaver(_connection_pool, serde=serde)
-            await _checkpointer.setup()
-            logger.info("AsyncPostgresSaver检查点器初始化成功")
-            
-        except Exception as e:
-            logger.error("AsyncPostgresSaver检查点器初始化失败", error=str(e), exc_info=True)
-            _checkpointer = None
-    
-    return _checkpointer
+def _get_memory_manager():
+    """获取旅游记忆管理器实例（从ResourceManager获取）。"""
+    try:
+        rm = get_resource_manager()
+        return rm.memory_manager
+    except RuntimeError:
+        logger.warning("ResourceManager未初始化，无法获取记忆管理器")
+        return None
+
+
+def _get_checkpointer():
+    """获取检查点器实例（从ResourceManager获取）。"""
+    try:
+        rm = get_resource_manager()
+        return rm.checkpointer
+    except RuntimeError:
+        logger.warning("ResourceManager未初始化，无法获取检查点器")
+        return None
 
 
 async def _get_compiled_graph():
@@ -166,83 +82,17 @@ async def _get_compiled_graph():
     global _compiled_graph
     
     if _compiled_graph is None:
-        checkpointer = await _get_checkpointer()
+        checkpointer = _get_checkpointer()
         _compiled_graph = build_travel_planner_graph(checkpointer=checkpointer)
         logger.info("旅游规划编译图初始化成功（带检查点器）")
     
     return _compiled_graph
 
 
-async def _cleanup_resources(wait_for_tasks: bool = True, timeout: float = 3.0) -> None:
-    """清理全局资源，关闭连接池并等待后台任务完成。
-    
-    Args:
-        wait_for_tasks: 是否等待后台任务完成（一次性脚本建议 True，Web 应用建议 False）
-        timeout: 等待后台任务的超时时间（秒）
-    """
-    global _connection_pool, _travel_memory_manager, _checkpointer, _compiled_graph
-    
+def _invalidate_compiled_graph():
+    """使编译图缓存失效（在资源清理时调用）。"""
+    global _compiled_graph
     _compiled_graph = None
-    _checkpointer = None
-    
-    # 1. 先关闭连接池（这会优雅地停止所有 worker 任务）
-    if _connection_pool is not None:
-        try:
-            await _connection_pool.close()
-            logger.info("旅游规划连接池已关闭")
-        except Exception as e:
-            logger.error("关闭连接池失败", error=str(e))
-        finally:
-            _connection_pool = None
-    
-    # 2. 清理记忆管理器引用
-    if _travel_memory_manager is not None:
-        _travel_memory_manager = None
-    
-    # 3. 等待其他后台任务完成（可选）
-    if wait_for_tasks:
-        await _wait_for_background_tasks(timeout=timeout)
-
-
-async def _wait_for_background_tasks(timeout: float = 5.0) -> None:
-    """等待所有后台任务完成。
-    
-    Args:
-        timeout: 最大等待时间（秒）
-    """
-    import asyncio
-    
-    # 获取当前事件循环中的所有任务
-    all_tasks = asyncio.all_tasks()
-    
-    # 排除当前任务（清理任务本身）
-    current_task = asyncio.current_task()
-    pending_tasks = [task for task in all_tasks if task is not current_task]
-    
-    if not pending_tasks:
-        return
-    
-    logger.info(f"等待 {len(pending_tasks)} 个后台任务完成...")
-    
-    try:
-        # 等待所有任务完成，带超时
-        await asyncio.wait_for(
-            asyncio.gather(*pending_tasks, return_exceptions=True),
-            timeout=timeout
-        )
-        logger.info("所有后台任务已完成")
-    except asyncio.TimeoutError:
-        logger.warning(f"等待后台任务超时（{timeout}秒），取消剩余任务")
-        # 取消所有未完成的任务
-        for task in pending_tasks:
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-    except Exception as e:
-        logger.error("等待后台任务时发生错误", error=str(e))
 
 def build_travel_planner_graph(checkpointer=None):
     """构建旅游规划工作流图。
@@ -310,7 +160,7 @@ async def run_travel_planner(
     # 获取历史规划记忆
     historical_context = ""
     try:
-        memory_manager = await _get_memory_manager()
+        memory_manager = _get_memory_manager()
         if memory_manager:
             historical_context = await memory_manager.get_relevant_plans(user_id, request, session_id)
             if historical_context:
@@ -368,14 +218,14 @@ async def run_travel_planner(
     with propagate_attributes(**trace_attributes):
         # 执行图
         # InpuT默认为state_schema
-        result = await graph.ainvoke(initial_state, context=context.model_dump(), config={"callbacks": [CallbackHandler()]})
+        result = await graph.ainvoke(initial_state, context=context.model_dump(), config={"callbacks": [_get_langfuse_handler()]})
     
     trip_plan = result.get("trip_plan")
     
     # 保存规划请求到长期记忆
     if trip_plan:
         try:
-            memory_manager = await _get_memory_manager()
+            memory_manager = _get_memory_manager()
             if memory_manager:
                 plan_summary = trip_plan.overall_suggestions[:500] if trip_plan.overall_suggestions else None
                 await memory_manager.save_plan_request(user_id, request, plan_summary, session_id)
@@ -445,7 +295,7 @@ async def stream_travel_planner(
     
     historical_context = ""
     try:
-        memory_manager = await _get_memory_manager()
+        memory_manager = _get_memory_manager()
         if memory_manager:
             historical_context = await memory_manager.get_relevant_plans(user_id, request, session_id)
             if historical_context:
@@ -497,7 +347,7 @@ async def stream_travel_planner(
 
     config = {
         "configurable": {"thread_id": thread_id},
-        "callbacks": [CallbackHandler()],
+        "callbacks": [_get_langfuse_handler()],
     }
 
     with propagate_attributes(**trace_attributes):
@@ -510,7 +360,7 @@ async def stream_travel_planner(
             yield event
     
     try:
-        memory_manager = await _get_memory_manager()
+        memory_manager = _get_memory_manager()
         if memory_manager:
             plan_summary = None
             await memory_manager.save_plan_request(user_id, request, plan_summary, session_id)
@@ -568,7 +418,7 @@ async def resume_travel_planner(
 
     config = {
         "configurable": {"thread_id": thread_id},
-        "callbacks": [CallbackHandler()],
+        "callbacks": [_get_langfuse_handler()],
     }
 
     with propagate_attributes(**trace_attributes):
@@ -647,6 +497,9 @@ def run_travel_planner_sync(
         )
         return result
     finally:
-        # 只在一次性脚本中清理资源
         if cleanup:
-            loop.run_until_complete(_cleanup_resources(wait_for_tasks=True, timeout=5.0))
+            try:
+                rm = get_resource_manager()
+                loop.run_until_complete(rm.shutdown())
+            except RuntimeError:
+                pass

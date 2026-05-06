@@ -109,10 +109,10 @@ class RAGPipeline:
         answer = await pipeline.agenerate("成都有什么美食？")
     """
 
-    def __init__(self):
+    def __init__(self, embeddings: Optional[DashScopeEmbeddings] = None):
         self._vector_store: Optional[PGVectorStore] = None
         self._engine: Optional[PGEngine] = None
-        self._embeddings: Optional[DashScopeEmbeddings] = None
+        self._embeddings: Optional[DashScopeEmbeddings] = embeddings
         self._splitter: Optional[RecursiveCharacterTextSplitter] = None
         self._initialized = False
 
@@ -643,6 +643,23 @@ class RAGPipeline:
             chunk_count=len(chunks),
         )
 
+    async def close(self):
+        """清理RAG流水线资源。
+
+        关闭PGEngine连接池，释放数据库连接。
+        应在应用关闭时调用。
+        """
+        if self._engine is not None:
+            try:
+                await self._engine.close()
+                logger.info("RAG PGEngine连接池已关闭")
+            except Exception as e:
+                logger.error("关闭RAG PGEngine连接池失败", error=str(e))
+            finally:
+                self._engine = None
+        self._vector_store = None
+        self._initialized = False
+
 
 RAG_GENERATION_PROMPT = """你是一个专业的旅游知识助手。请根据提供的参考资料回答用户的问题。
 
@@ -662,14 +679,25 @@ _rag_pipeline: Optional[RAGPipeline] = None
 def get_rag_pipeline() -> RAGPipeline:
     """获取RAG流水线全局单例。
 
-    使用单例模式确保整个应用共享同一个RAGPipeline实例，
-    避免重复初始化嵌入模型和数据库连接。
+    优先从ResourceManager获取（由生命周期管理器初始化），
+    如果ResourceManager未初始化则回退到本地懒加载模式。
 
     Returns:
         RAGPipeline实例
     """
     global _rag_pipeline
-    if _rag_pipeline is None:
-        _rag_pipeline = RAGPipeline()
-        logger.info("RAG流水线全局实例已创建")
+    if _rag_pipeline is not None:
+        return _rag_pipeline
+
+    try:
+        from app.services.resource_manager import get_resource_manager
+        rm = get_resource_manager()
+        if rm.rag_pipeline is not None:
+            _rag_pipeline = rm.rag_pipeline
+            return _rag_pipeline
+    except RuntimeError:
+        pass
+
+    _rag_pipeline = RAGPipeline()
+    logger.info("RAG流水线全局实例已创建（懒加载模式）")
     return _rag_pipeline

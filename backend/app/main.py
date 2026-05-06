@@ -1,7 +1,5 @@
 from dotenv import load_dotenv
-import os
 
-import uvicorn
 from datetime import datetime
 from typing import (
     Any,
@@ -19,7 +17,6 @@ from slowapi.errors import RateLimitExceeded
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from langfuse import Langfuse
 from app.core.middleware import logging_context_middleware
 from app.core.config import settings
 from app.core.logging import logger
@@ -27,63 +24,35 @@ from app.core.limiter import limiter
 from app.api.v1.api import api_router
 
 from app.services.database import database_service
-from app.core.langgraph.agents.travel_plan_agent.graph import (
-    _get_memory_manager,
-    _get_checkpointer,
-    _cleanup_resources,
-)
+from app.services.resource_manager import ResourceManager, get_resource_manager
 
 # 从.env文件中加载环境变量
 load_dotenv()
-
-# lagfuse初始化
-langfuse = Langfuse(
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-    host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
-)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理。
-    
-    在应用启动时初始化资源，在应用关闭时清理资源。
+
+    通过ResourceManager统一管理所有资源的初始化和清理。
     """
     # ========== 启动时 ==========
     logger.info("应用启动中...")
-    
-    # 初始化旅游规划助手的连接池
-    try:
-        await _get_memory_manager()
-        logger.info("旅游规划助手初始化成功")
-    except Exception as e:
-        logger.error("旅游规划助手初始化失败", error=str(e), exc_info=True)
-    
-    # 初始化检查点器
-    try:
-        await _get_checkpointer()
-        logger.info("检查点器初始化成功")
-    except Exception as e:
-        logger.error("检查点器初始化失败", error=str(e), exc_info=True)
-    
+
+    rm = ResourceManager()
+    await rm.startup()
+    app.state.resource_manager = rm
+
     logger.info("应用启动完成")
-    
+
     yield  # 应用运行中...
-    
+
     # ========== 关闭时 ==========
     logger.info("应用关闭中...")
-    
-    # 清理旅游规划助手资源
-    try:
-        await _cleanup_resources(wait_for_tasks=False)
-        logger.info("旅游规划助手资源已清理")
-    except Exception as e:
-        logger.error("清理旅游规划助手资源失败", error=str(e), exc_info=True)
-    
-    # 其他清理逻辑...
-    # 例如：关闭数据库连接、清理缓存等
-    
+
+    await rm.shutdown()
+    app.state.resource_manager = None
+
     logger.info("应用已关闭")
 
 
@@ -184,7 +153,11 @@ async def health_check(request: Request) -> Dict[str, Any]:
     logger.info("health_check_called（包含环境变量）")
 
     # 检查数据库连接
-    db_healthy = await database_service.health_check()
+    try:
+        rm = get_resource_manager()
+        db_healthy = await rm.db_service.health_check()
+    except RuntimeError:
+        db_healthy = await database_service.health_check()
 
     response = {
         "status": "healthy" if db_healthy else "degraded",

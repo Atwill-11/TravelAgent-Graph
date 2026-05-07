@@ -252,6 +252,11 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                 state=state,
                 task_description=task_name,
             )
+        elif task_type == "attraction":
+            query = _build_attraction_query(
+                state=state,
+                task_description=task_name,
+            )
         else:
             query = task_name
         
@@ -791,6 +796,46 @@ def _format_trip_plan_for_summary(trip_plan) -> str:
         info_lines.append("")
     
     return "\n".join(info_lines)
+
+
+def _build_attraction_query(state, task_description: str) -> str:
+    """构建 attraction 任务的查询文本
+    
+    Args:
+        state: 当前状态
+        task_description: 任务描述
+        
+    Returns:
+        完整的查询文本
+    """
+    trip_request = state.trip_request
+    user_request = state.messages[0].content if state.messages else ""
+    user_feedback = state.user_feedback
+    attraction_pool = state.attraction_pool
+    is_modification = state.notes.get("user_decision") == "modify"
+    
+    query_parts = []
+    
+    query_parts.append(f"**任务描述：**{task_description}")
+    
+    if trip_request:
+        query_parts.append(f"**目的地：**{trip_request.city}")
+    
+    if is_modification and user_feedback:
+        query_parts.append(f"**用户修改意见：**{user_feedback}")
+    
+    if attraction_pool:
+        attractions_info = _format_attractions_for_selection(attraction_pool)
+        query_parts.append(f"**当前景点池：**\n{attractions_info}")
+        query_parts.append(f"**景点池总数：**{len(attraction_pool)}个景点")
+    else:
+        query_parts.append("**当前景点池：**暂无景点")
+    
+    if state.trip_plan and is_modification:
+        current_plan_info = _format_current_plan(state.trip_plan)
+        query_parts.append(f"**当前行程安排：**\n{current_plan_info}")
+    
+    return "\n\n".join(query_parts)
 
 
 def _build_selection_query(state, task_description: str) -> str:

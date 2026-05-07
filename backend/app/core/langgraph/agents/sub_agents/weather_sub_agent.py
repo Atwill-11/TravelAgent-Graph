@@ -16,8 +16,6 @@ model = ChatQwen(
     api_key=settings.DASHSCOPE_API_KEY,
     api_base=settings.DASHSCOPE_API_BASE,
     temperature=0.7,
-    max_tokens=1000,
-    timeout=180,
     max_retries=2,
 )
 

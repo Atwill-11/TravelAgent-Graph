@@ -48,11 +48,17 @@
               <span class="step-icon">{{ step.icon }}</span>
               <span class="step-name">{{ step.display_name }}</span>
               <a-spin v-if="step.status === 'running'" size="small" />
-              <a-tag v-if="step.status === 'completed'" color="green" size="small"
+              <a-tag
+                v-if="step.status === 'completed'"
+                color="green"
+                size="small"
                 >完成</a-tag
               >
             </div>
-            <div v-if="step.plan_items && step.plan_items.length > 0" class="step-plan-items">
+            <div
+              v-if="step.plan_items && step.plan_items.length > 0"
+              class="step-plan-items"
+            >
               <a-tag
                 v-for="item in step.plan_items"
                 :key="item.task"
@@ -104,7 +110,7 @@ watch(
       thinkingSteps.value = [];
       modifyError.value = "";
     }
-  }
+  },
 );
 
 const getStepColor = (status: string): string => {
@@ -121,8 +127,12 @@ const getStepColor = (status: string): string => {
 };
 
 const addThinkingStep = (step: ThinkingStep) => {
+  if (step.node.startsWith("execute-")) {
+    thinkingSteps.value.push(step);
+    return;
+  }
   const existing = thinkingSteps.value.find(
-    (s) => s.node === step.node && step.node !== "execute"
+    (s) => s.node === step.node && !step.node.startsWith("execute-"),
   );
   if (existing) {
     Object.assign(existing, step);
@@ -155,7 +165,7 @@ const handleCompletePlan = async () => {
           isResuming.value = false;
           message.error(data.message);
         },
-      }
+      },
     );
   } catch (error: any) {
     modifyError.value = error.message || "完成规划失败";
@@ -201,29 +211,105 @@ const handleModifyPlan = async () => {
             plan_items: data.plan_items,
           });
         },
+        onExecuteStart: (data) => {
+          addThinkingStep({
+            id: `execute-${data.task_type}-${Date.now()}`,
+            node: `execute-${data.task_type}`,
+            display_name: data.is_parallel
+              ? `⚡ ${data.task_type_display}`
+              : data.task_type_display,
+            icon: data.task_icon,
+            message: data.message,
+            status: "running",
+            timestamp: Date.now(),
+          });
+        },
+        onExecuteEnd: (data) => {
+          const stepIndex = thinkingSteps.value.findIndex(
+            (s) =>
+              s.status === "running" &&
+              s.node.startsWith("execute-") &&
+              s.message.includes(data.task_name),
+          );
+          if (stepIndex !== -1) {
+            const step = thinkingSteps.value[stepIndex];
+            step.status = data.status === "completed" ? "completed" : "failed";
+            step.message = data.message;
+            if (data.error) step.details = data.error;
+          } else {
+            addThinkingStep({
+              id: `execute-${data.task_type}-${Date.now()}`,
+              node: `execute-${data.task_type}`,
+              display_name: data.task_type_display,
+              icon: data.task_icon,
+              message: data.message,
+              status: data.status === "completed" ? "completed" : "failed",
+              timestamp: Date.now(),
+              details: data.error,
+            });
+          }
+        },
         onExecute: (data) => {
-          updateLastStepStatus("completed");
+          thinkingSteps.value
+            .filter(
+              (s) => s.status === "running" && s.node.startsWith("execute-"),
+            )
+            .forEach((s) => {
+              s.status = "completed";
+            });
           addThinkingStep({
             id: `execute-${Date.now()}`,
             node: "execute",
             display_name: data.display_name,
             icon: data.icon,
             message: data.message,
-            status: "running",
+            status: "completed",
             timestamp: Date.now(),
           });
         },
-        onSummarize: (data) => {
+        onSummarizeStart: (data) => {
           updateLastStepStatus("completed");
           addThinkingStep({
             id: `summarize-${Date.now()}`,
             node: "summarize",
-            display_name: data.display_name,
-            icon: data.icon,
+            display_name: "生成旅行规划",
+            icon: "📋",
             message: data.message,
             status: "running",
             timestamp: Date.now(),
           });
+        },
+        onSummarizeProgress: (data) => {
+          const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+          if (lastStep && lastStep.node === "summarize" && lastStep.status === "running") {
+            lastStep.message = data.message;
+          }
+        },
+        onSummarizeEnd: (data) => {
+          const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+          if (lastStep && lastStep.node === "summarize" && lastStep.status === "running") {
+            lastStep.status = data.status === "completed" ? "completed" : "failed";
+            lastStep.message = data.message;
+          }
+        },
+        onSummarize: (data) => {
+          const existingSummarize = thinkingSteps.value.find(
+            (s) => s.node === "summarize"
+          );
+          if (existingSummarize) {
+            existingSummarize.status = "completed";
+            existingSummarize.message = data.message;
+          } else {
+            addThinkingStep({
+              id: `summarize-${Date.now()}`,
+              node: "summarize",
+              display_name: data.display_name,
+              icon: data.icon,
+              message: data.message,
+              status: "completed",
+              timestamp: Date.now(),
+            });
+          }
           if (data.trip_plan) {
             emit("update:tripPlan", data.trip_plan);
           }
@@ -260,7 +346,7 @@ const handleModifyPlan = async () => {
           isResuming.value = false;
           message.error(data.message);
         },
-      }
+      },
     );
   } catch (error: any) {
     modifyError.value = error.message || "修改规划失败";

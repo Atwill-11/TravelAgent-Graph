@@ -9,6 +9,11 @@ import type {
   ChatResponse,
   SSEPlanEvent,
   SSEExecuteEvent,
+  SSEExecuteStartEvent,
+  SSEExecuteEndEvent,
+  SSESummarizeStartEvent,
+  SSESummarizeProgressEvent,
+  SSESummarizeEndEvent,
   SSESummarizeEvent,
   SSEReviewEvent,
   SSEResumeRequest,
@@ -223,7 +228,12 @@ export async function sendChatStream(
 export type SSEEventHandlers = {
   onStart?: (data: SSEStartEvent) => void;
   onPlan?: (data: SSEPlanEvent) => void;
+  onExecuteStart?: (data: SSEExecuteStartEvent) => void;
+  onExecuteEnd?: (data: SSEExecuteEndEvent) => void;
   onExecute?: (data: SSEExecuteEvent) => void;
+  onSummarizeStart?: (data: SSESummarizeStartEvent) => void;
+  onSummarizeProgress?: (data: SSESummarizeProgressEvent) => void;
+  onSummarizeEnd?: (data: SSESummarizeEndEvent) => void;
   onSummarize?: (data: SSESummarizeEvent) => void;
   onReview?: (data: SSEReviewEvent) => void;
   onDone?: (data: SSEDoneEvent) => void;
@@ -294,8 +304,25 @@ export async function generateTripPlanStream(
                 case "plan":
                   handlers.onPlan?.(data as SSEPlanEvent);
                   break;
+                case "execute_start":
+                  handlers.onExecuteStart?.(data as SSEExecuteStartEvent);
+                  break;
+                case "execute_end":
+                  handlers.onExecuteEnd?.(data as SSEExecuteEndEvent);
+                  break;
                 case "execute":
                   handlers.onExecute?.(data as SSEExecuteEvent);
+                  break;
+                case "summarize_start":
+                  handlers.onSummarizeStart?.(data as SSESummarizeStartEvent);
+                  break;
+                case "summarize_progress":
+                  handlers.onSummarizeProgress?.(
+                    data as SSESummarizeProgressEvent,
+                  );
+                  break;
+                case "summarize_end":
+                  handlers.onSummarizeEnd?.(data as SSESummarizeEndEvent);
                   break;
                 case "summarize":
                   handlers.onSummarize?.(data as SSESummarizeEvent);
@@ -397,8 +424,25 @@ export async function resumeTripPlanStream(
               case "plan":
                 handlers.onPlan?.(data as SSEPlanEvent);
                 break;
+              case "execute_start":
+                handlers.onExecuteStart?.(data as SSEExecuteStartEvent);
+                break;
+              case "execute_end":
+                handlers.onExecuteEnd?.(data as SSEExecuteEndEvent);
+                break;
               case "execute":
                 handlers.onExecute?.(data as SSEExecuteEvent);
+                break;
+              case "summarize_start":
+                handlers.onSummarizeStart?.(data as SSESummarizeStartEvent);
+                break;
+              case "summarize_progress":
+                handlers.onSummarizeProgress?.(
+                  data as SSESummarizeProgressEvent,
+                );
+                break;
+              case "summarize_end":
+                handlers.onSummarizeEnd?.(data as SSESummarizeEndEvent);
                 break;
               case "summarize":
                 handlers.onSummarize?.(data as SSESummarizeEvent);

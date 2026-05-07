@@ -82,7 +82,74 @@ async def _stream_event_generator(
             user_id=user_id,
             thread_id=thread_id,
         ):
-            for node_name, node_state in event.items():
+            if not isinstance(event, tuple) or len(event) != 2:
+                continue
+            
+            mode, event_data = event
+            
+            if mode == "custom":
+                custom_type = event_data.get("type") if isinstance(event_data, dict) else None
+                
+                if custom_type == "sub_agent_start":
+                    data = {
+                        'task_name': event_data.get('task_name', ''),
+                        'task_type': event_data.get('task_type', ''),
+                        'task_type_display': event_data.get('task_type_display', ''),
+                        'task_icon': event_data.get('task_icon', '⚙️'),
+                        'is_parallel': event_data.get('is_parallel', False),
+                        'message': f"{event_data.get('task_icon', '⚙️')} {event_data.get('task_type_display', '')}：{event_data.get('task_name', '')}",
+                    }
+                    yield f"event: execute_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "sub_agent_end":
+                    status = event_data.get('status', 'completed')
+                    task_icon = event_data.get('task_icon', '⚙️')
+                    task_type_display = event_data.get('task_type_display', '')
+                    task_name = event_data.get('task_name', '')
+                    
+                    if status == "completed":
+                        message = f"✅ {task_icon} {task_type_display}：{task_name} 完成"
+                    else:
+                        error = event_data.get('error', '未知错误')
+                        message = f"❌ {task_icon} {task_type_display}：{task_name} 失败 - {error}"
+                    
+                    data = {
+                        'task_name': task_name,
+                        'task_type': event_data.get('task_type', ''),
+                        'task_type_display': task_type_display,
+                        'task_icon': task_icon,
+                        'status': status,
+                        'error': event_data.get('error'),
+                        'is_parallel': event_data.get('is_parallel', False),
+                        'message': message,
+                    }
+                    yield f"event: execute_end\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_start":
+                    data = {
+                        'message': event_data.get('message', '正在生成完整的旅行规划'),
+                    }
+                    yield f"event: summarize_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_progress":
+                    data = {
+                        'message': event_data.get('message', ''),
+                    }
+                    yield f"event: summarize_progress\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_end":
+                    data = {
+                        'status': event_data.get('status', 'completed'),
+                        'message': event_data.get('message', ''),
+                    }
+                    yield f"event: summarize_end\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                continue
+            
+            if mode != "updates":
+                continue
+            
+            for node_name, node_state in event_data.items():
                 display_name = NODE_DISPLAY_NAMES.get(node_name, node_name)
                 icon = NODE_DISPLAY_ICONS.get(node_name, "📌")
 
@@ -115,19 +182,50 @@ async def _stream_event_generator(
                     yield f"event: plan\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                 elif node_name == "execute":
-                    current_task = node_state.get('current_task')
-                    task_type = None
-                    task_status = None
                     node_plan = node_state.get('plan', [])
-                    if node_plan:
-                        for t in node_plan:
+                    
+                    completed_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "completed":
                             t_task = t.get('task') if isinstance(t, dict) else t.task
-                            if t_task == current_task:
-                                task_type = t.get('type') if isinstance(t, dict) else t.type
-                                task_status = t.get('status') if isinstance(t, dict) else t.status
-                                break
-                    sub_display = SUB_AGENT_DISPLAY_NAMES.get(task_type, task_type or "未知") if task_type else ""
-                    sub_icon = SUB_AGENT_DISPLAY_ICONS.get(task_type, "⚙️") if task_type else "⚙️"
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            completed_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "completed",
+                            })
+                    
+                    failed_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "failed":
+                            t_task = t.get('task') if isinstance(t, dict) else t.task
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            failed_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "failed",
+                            })
+                    
+                    pending_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "pending":
+                            t_task = t.get('task') if isinstance(t, dict) else t.task
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            pending_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "pending",
+                            })
+                    
                     messages = []
                     node_messages = node_state.get('messages', [])
                     if node_messages:
@@ -137,12 +235,14 @@ async def _stream_event_generator(
                         'node': node_name,
                         'display_name': display_name,
                         'icon': icon,
-                        'current_task': current_task,
-                        'task_type': task_type,
-                        'task_type_display': sub_display,
-                        'task_icon': sub_icon,
-                        'task_status': task_status,
-                        'message': f'{sub_icon} {sub_display}：{current_task}' if current_task else f'{icon} {display_name}',
+                        'completed_tasks': completed_tasks,
+                        'failed_tasks': failed_tasks,
+                        'pending_tasks': pending_tasks,
+                        'total_tasks': len(node_plan),
+                        'completed_count': len(completed_tasks),
+                        'failed_count': len(failed_tasks),
+                        'pending_count': len(pending_tasks),
+                        'message': f'{icon} {display_name}：本轮执行完成',
                         'messages': messages,
                     }
                     yield f"event: execute\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -281,7 +381,74 @@ async def _resume_stream_event_generator(
             resume_value=resume_value,
             thread_id=thread_id,
         ):
-            for node_name, node_state in event.items():
+            if not isinstance(event, tuple) or len(event) != 2:
+                continue
+            
+            mode, event_data = event
+            
+            if mode == "custom":
+                custom_type = event_data.get("type") if isinstance(event_data, dict) else None
+                
+                if custom_type == "sub_agent_start":
+                    data = {
+                        'task_name': event_data.get('task_name', ''),
+                        'task_type': event_data.get('task_type', ''),
+                        'task_type_display': event_data.get('task_type_display', ''),
+                        'task_icon': event_data.get('task_icon', '⚙️'),
+                        'is_parallel': event_data.get('is_parallel', False),
+                        'message': f"{event_data.get('task_icon', '⚙️')} {event_data.get('task_type_display', '')}：{event_data.get('task_name', '')}",
+                    }
+                    yield f"event: execute_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "sub_agent_end":
+                    status = event_data.get('status', 'completed')
+                    task_icon = event_data.get('task_icon', '⚙️')
+                    task_type_display = event_data.get('task_type_display', '')
+                    task_name = event_data.get('task_name', '')
+                    
+                    if status == "completed":
+                        message = f"✅ {task_icon} {task_type_display}：{task_name} 完成"
+                    else:
+                        error = event_data.get('error', '未知错误')
+                        message = f"❌ {task_icon} {task_type_display}：{task_name} 失败 - {error}"
+                    
+                    data = {
+                        'task_name': task_name,
+                        'task_type': event_data.get('task_type', ''),
+                        'task_type_display': task_type_display,
+                        'task_icon': task_icon,
+                        'status': status,
+                        'error': event_data.get('error'),
+                        'is_parallel': event_data.get('is_parallel', False),
+                        'message': message,
+                    }
+                    yield f"event: execute_end\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_start":
+                    data = {
+                        'message': event_data.get('message', '正在生成完整的旅行规划'),
+                    }
+                    yield f"event: summarize_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_progress":
+                    data = {
+                        'message': event_data.get('message', ''),
+                    }
+                    yield f"event: summarize_progress\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                elif custom_type == "summarize_end":
+                    data = {
+                        'status': event_data.get('status', 'completed'),
+                        'message': event_data.get('message', ''),
+                    }
+                    yield f"event: summarize_end\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                continue
+            
+            if mode != "updates":
+                continue
+            
+            for node_name, node_state in event_data.items():
                 display_name = NODE_DISPLAY_NAMES.get(node_name, node_name)
                 icon = NODE_DISPLAY_ICONS.get(node_name, "📌")
 
@@ -314,19 +481,50 @@ async def _resume_stream_event_generator(
                     yield f"event: plan\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                 elif node_name == "execute":
-                    current_task = node_state.get('current_task')
-                    task_type = None
-                    task_status = None
                     node_plan = node_state.get('plan', [])
-                    if node_plan:
-                        for t in node_plan:
+                    
+                    completed_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "completed":
                             t_task = t.get('task') if isinstance(t, dict) else t.task
-                            if t_task == current_task:
-                                task_type = t.get('type') if isinstance(t, dict) else t.type
-                                task_status = t.get('status') if isinstance(t, dict) else t.status
-                                break
-                    sub_display = SUB_AGENT_DISPLAY_NAMES.get(task_type, task_type or "未知") if task_type else ""
-                    sub_icon = SUB_AGENT_DISPLAY_ICONS.get(task_type, "⚙️") if task_type else "⚙️"
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            completed_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "completed",
+                            })
+                    
+                    failed_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "failed":
+                            t_task = t.get('task') if isinstance(t, dict) else t.task
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            failed_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "failed",
+                            })
+                    
+                    pending_tasks = []
+                    for t in node_plan:
+                        t_status = t.get('status') if isinstance(t, dict) else t.status
+                        if t_status == "pending":
+                            t_task = t.get('task') if isinstance(t, dict) else t.task
+                            t_type = t.get('type') if isinstance(t, dict) else t.type
+                            pending_tasks.append({
+                                "task": t_task,
+                                "type": t_type,
+                                "type_display": SUB_AGENT_DISPLAY_NAMES.get(t_type, t_type),
+                                "icon": SUB_AGENT_DISPLAY_ICONS.get(t_type, "⚙️"),
+                                "status": "pending",
+                            })
+                    
                     messages = []
                     node_messages = node_state.get('messages', [])
                     if node_messages:
@@ -336,12 +534,14 @@ async def _resume_stream_event_generator(
                         'node': node_name,
                         'display_name': display_name,
                         'icon': icon,
-                        'current_task': current_task,
-                        'task_type': task_type,
-                        'task_type_display': sub_display,
-                        'task_icon': sub_icon,
-                        'task_status': task_status,
-                        'message': f'{sub_icon} {sub_display}：{current_task}' if current_task else f'{icon} {display_name}',
+                        'completed_tasks': completed_tasks,
+                        'failed_tasks': failed_tasks,
+                        'pending_tasks': pending_tasks,
+                        'total_tasks': len(node_plan),
+                        'completed_count': len(completed_tasks),
+                        'failed_count': len(failed_tasks),
+                        'pending_count': len(pending_tasks),
+                        'message': f'{icon} {display_name}：本轮执行完成',
                         'messages': messages,
                     }
                     yield f"event: execute\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"

@@ -355,7 +355,7 @@ async def stream_travel_planner(
             initial_state,
             context=context.model_dump(),
             config=config,
-            stream_mode="updates",
+            stream_mode=["updates", "custom"],
         ):
             yield event
     
@@ -426,7 +426,7 @@ async def resume_travel_planner(
             Command(resume=resume_value),
             context=context.model_dump(),
             config=config,
-            stream_mode="updates",
+            stream_mode=["updates", "custom"],
         ):
             yield event
 

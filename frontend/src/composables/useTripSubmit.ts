@@ -1,16 +1,18 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { message } from "ant-design-vue";
-import {
-  generateTripPlan,
-  generateTripPlanStream,
-} from "@/services/api";
+import { generateTripPlan, generateTripPlanStream } from "@/services/api";
 import type {
   TripFormData,
   SessionResponse,
   ThinkingStep,
   SSEPlanEvent,
   SSEExecuteEvent,
+  SSEExecuteStartEvent,
+  SSEExecuteEndEvent,
+  SSESummarizeStartEvent,
+  SSESummarizeProgressEvent,
+  SSESummarizeEndEvent,
   SSESummarizeEvent,
   SSEReviewEvent,
 } from "@/types";
@@ -32,7 +34,7 @@ export function useTripSubmit() {
     msg: string,
     status: ThinkingStep["status"],
     details?: string,
-    plan_items?: any[]
+    plan_items?: any[],
   ) => {
     thinkingSteps.value.push({
       id: `${node}-${Date.now()}`,
@@ -71,42 +73,120 @@ export function useTripSubmit() {
             data.message,
             "running",
             undefined,
-            data.plan_items
+            data.plan_items,
           );
+        },
+        onExecuteStart: (data: SSEExecuteStartEvent) => {
+          loadingStatus.value = data.message;
+          addThinkingStep(
+            `execute-${data.task_type}-${Date.now()}`,
+            data.is_parallel
+              ? `⚡ ${data.task_type_display}`
+              : data.task_type_display,
+            data.task_icon,
+            data.message,
+            "running",
+          );
+        },
+        onExecuteEnd: (data: SSEExecuteEndEvent) => {
+          const stepIndex = thinkingSteps.value.findIndex(
+            (s) =>
+              s.status === "running" &&
+              s.node.startsWith("execute-") &&
+              s.message.includes(data.task_name),
+          );
+          if (stepIndex !== -1) {
+            const step = thinkingSteps.value[stepIndex];
+            step.status = data.status === "completed" ? "completed" : "failed";
+            step.message = data.message;
+            if (data.error) step.details = data.error;
+          } else {
+            addThinkingStep(
+              `execute-${data.task_type}-${Date.now()}`,
+              data.task_type_display,
+              data.task_icon,
+              data.message,
+              data.status === "completed" ? "completed" : "failed",
+              data.error,
+            );
+          }
+          loadingProgress.value = Math.min(85, loadingProgress.value + 8);
         },
         onExecute: (data: SSEExecuteEvent) => {
           loadingStatus.value = data.message;
-          const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
-          if (
-            lastStep &&
-            lastStep.node === "execute" &&
-            lastStep.status === "running"
-          ) {
-            lastStep.message = data.message;
-            lastStep.details = data.current_task || undefined;
-          } else {
-            completeCurrentStep();
-            addThinkingStep(
-              data.node,
-              data.display_name,
-              data.icon,
-              data.message,
-              "running",
-              data.current_task || undefined
-            );
+          const hasRunningExecute = thinkingSteps.value.some(
+            (s) => s.status === "running" && s.node.startsWith("execute-"),
+          );
+          if (hasRunningExecute) {
+            thinkingSteps.value
+              .filter(
+                (s) => s.status === "running" && s.node.startsWith("execute-"),
+              )
+              .forEach((s) => {
+                s.status = "completed";
+              });
           }
-          loadingProgress.value = Math.min(90, loadingProgress.value + 15);
-        },
-        onSummarize: (data: SSESummarizeEvent) => {
-          loadingStatus.value = data.message;
-          completeCurrentStep();
           addThinkingStep(
             data.node,
             data.display_name,
             data.icon,
             data.message,
-            "running"
+            "completed",
           );
+          loadingProgress.value = Math.min(90, loadingProgress.value + 5);
+        },
+        onSummarizeStart: (data: SSESummarizeStartEvent) => {
+          loadingStatus.value = data.message;
+          completeCurrentStep();
+          addThinkingStep(
+            "summarize",
+            "生成旅行规划",
+            "📋",
+            data.message,
+            "running",
+          );
+          loadingProgress.value = 90;
+        },
+        onSummarizeProgress: (data: SSESummarizeProgressEvent) => {
+          loadingStatus.value = data.message;
+          const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+          if (
+            lastStep &&
+            lastStep.node === "summarize" &&
+            lastStep.status === "running"
+          ) {
+            lastStep.message = data.message;
+          }
+        },
+        onSummarizeEnd: (data: SSESummarizeEndEvent) => {
+          const lastStep = thinkingSteps.value[thinkingSteps.value.length - 1];
+          if (
+            lastStep &&
+            lastStep.node === "summarize" &&
+            lastStep.status === "running"
+          ) {
+            lastStep.status =
+              data.status === "completed" ? "completed" : "failed";
+            lastStep.message = data.message;
+          }
+        },
+        onSummarize: (data: SSESummarizeEvent) => {
+          loadingStatus.value = data.message;
+          const existingSummarize = thinkingSteps.value.find(
+            (s) => s.node === "summarize",
+          );
+          if (existingSummarize) {
+            existingSummarize.status = "completed";
+            existingSummarize.message = data.message;
+          } else {
+            addThinkingStep(
+              data.node,
+              data.display_name,
+              data.icon,
+              data.message,
+              "completed",
+            );
+          }
           loadingProgress.value = 95;
           if (data.trip_plan) {
             sessionStorage.setItem("tripPlan", JSON.stringify(data.trip_plan));
@@ -172,7 +252,7 @@ export function useTripSubmit() {
 
   const handleSubmitNonStream = async (
     requestData: TripFormData,
-    session: SessionResponse
+    session: SessionResponse,
   ) => {
     const progressInterval = setInterval(() => {
       if (loadingProgress.value < 90) {
@@ -192,7 +272,7 @@ export function useTripSubmit() {
     try {
       const response = await generateTripPlan(
         requestData,
-        session.token.access_token
+        session.token.access_token,
       );
 
       clearInterval(progressInterval);
@@ -219,7 +299,7 @@ export function useTripSubmit() {
 
   const startSubmit = async (
     requestData: TripFormData,
-    session: SessionResponse
+    session: SessionResponse,
   ) => {
     loading.value = true;
     loadingProgress.value = 0;

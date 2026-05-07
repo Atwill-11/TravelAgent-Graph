@@ -231,7 +231,7 @@ async def _execute_single_task(
     task_item: TaskItem,
     task_idx: int,
     state: TravelPlannerState,
-) -> tuple[int, str, str, dict | None, dict | None]:
+) -> tuple[int, str, str, str | None, dict | None, str | None]:
     """执行单个子智能体任务。
     
     Returns:
@@ -266,16 +266,76 @@ async def _execute_single_task(
         return (task_idx, task_name, task_type, None, None, str(e))
 
 
+def _apply_task_result_to_update(
+    update: dict,
+    task_type: str,
+    structured_data,
+    state: TravelPlannerState,
+):
+    """将子智能体的结构化数据应用到状态更新字典中。"""
+    if task_type == "weather" and structured_data:
+        try:
+            weather_data = TravelWeatherData(**structured_data)
+            if state.trip_plan:
+                trip_plan = state.trip_plan.model_copy(update={"weather_info": weather_data})
+            else:
+                trip_plan = TripPlan(
+                    city=state.trip_request.city if state.trip_request else "",
+                    start_date=state.trip_request.start_date if state.trip_request else "",
+                    end_date=state.trip_request.end_date if state.trip_request else "",
+                    days=[],
+                    weather_info=weather_data,
+                    overall_suggestions="",
+                )
+            update["trip_plan"] = trip_plan
+        except Exception as e:
+            logger.error(f"解析天气结构化数据失败: {e}")
+    
+    if task_type == "attraction" and structured_data:
+        try:
+            from app.schemas.travel.components import Attraction
+            if isinstance(structured_data, list):
+                attractions = []
+                for item in structured_data:
+                    if isinstance(item, Attraction):
+                        attractions.append(item)
+                    elif isinstance(item, dict):
+                        attractions.append(Attraction(**item))
+                update["attraction_pool"].extend(attractions)
+                logger.info(f"已将 {len(attractions)} 个景点添加到景点池")
+        except Exception as e:
+            logger.error(f"解析景点结构化数据失败: {e}")
+    
+    if task_type == "hotel" and structured_data:
+        try:
+            from app.schemas.travel.components import Hotel
+            if isinstance(structured_data, list):
+                hotels = []
+                for item in structured_data:
+                    if isinstance(item, Hotel):
+                        hotels.append(item)
+                    elif isinstance(item, dict):
+                        hotels.append(Hotel(**item))
+                update["hotel_pool"].extend(hotels)
+                logger.info(f"已将 {len(hotels)} 个酒店添加到酒店池")
+        except Exception as e:
+            logger.error(f"解析酒店结构化数据失败: {e}")
+
+
 async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     """
     执行子智能体节点。
     并行执行独立的子任务，依赖任务等待前置任务完成。
+    通过 get_stream_writer 实时推送每个子智能体的执行进度。
     
     任务依赖关系：
     - weather, attraction, hotel, rag: 独立任务，可并行执行
     - selection: 依赖 attraction 和 hotel，需等待它们完成
     """
     import asyncio
+    from langgraph.config import get_stream_writer
+    
+    writer = get_stream_writer()
     
     plan = list(state.plan)
     sub_agent_results = list(state.sub_agent_results)
@@ -313,8 +373,32 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     if independent_tasks:
         logger.info(f"开始并行执行 {len(independent_tasks)} 个独立任务")
         
+        for idx, task_item in independent_tasks:
+            writer({
+                "type": "sub_agent_start",
+                "task_name": task_item.task,
+                "task_type": task_item.type,
+                "task_type_display": SUB_AGENT_DISPLAY_NAMES.get(task_item.type, task_item.type),
+                "task_icon": SUB_AGENT_DISPLAY_ICONS.get(task_item.type, "⚙️"),
+                "is_parallel": len(independent_tasks) > 1,
+            })
+        
+        async def _run_task_with_callback(task_idx, task_item):
+            result = await _execute_single_task(task_item, task_idx, state)
+            writer({
+                "type": "sub_agent_end",
+                "task_name": task_item.task,
+                "task_type": task_item.type,
+                "task_type_display": SUB_AGENT_DISPLAY_NAMES.get(task_item.type, task_item.type),
+                "task_icon": SUB_AGENT_DISPLAY_ICONS.get(task_item.type, "⚙️"),
+                "status": "completed" if result[5] is None else "failed",
+                "error": result[5],
+                "is_parallel": len(independent_tasks) > 1,
+            })
+            return result
+        
         tasks = [
-            _execute_single_task(task_item, idx, state)
+            _run_task_with_callback(idx, task_item)
             for idx, task_item in independent_tasks
         ]
         
@@ -362,53 +446,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
             )
             completed_task_names.append(task_name)
             
-            if task_type == "weather" and structured_data:
-                try:
-                    weather_data = TravelWeatherData(**structured_data)
-                    if state.trip_plan:
-                        trip_plan = state.trip_plan.model_copy(update={"weather_info": weather_data})
-                    else:
-                        trip_plan = TripPlan(
-                            city=state.trip_request.city if state.trip_request else "",
-                            start_date=state.trip_request.start_date if state.trip_request else "",
-                            end_date=state.trip_request.end_date if state.trip_request else "",
-                            days=[],
-                            weather_info=weather_data,
-                            overall_suggestions="",
-                        )
-                    update["trip_plan"] = trip_plan
-                except Exception as e:
-                    logger.error(f"解析天气结构化数据失败: {e}")
-            
-            if task_type == "attraction" and structured_data:
-                try:
-                    from app.schemas.travel.components import Attraction
-                    if isinstance(structured_data, list):
-                        attractions = []
-                        for item in structured_data:
-                            if isinstance(item, Attraction):
-                                attractions.append(item)
-                            elif isinstance(item, dict):
-                                attractions.append(Attraction(**item))
-                        update["attraction_pool"].extend(attractions)
-                        logger.info(f"已将 {len(attractions)} 个景点添加到景点池")
-                except Exception as e:
-                    logger.error(f"解析景点结构化数据失败: {e}")
-            
-            if task_type == "hotel" and structured_data:
-                try:
-                    from app.schemas.travel.components import Hotel
-                    if isinstance(structured_data, list):
-                        hotels = []
-                        for item in structured_data:
-                            if isinstance(item, Hotel):
-                                hotels.append(item)
-                            elif isinstance(item, dict):
-                                hotels.append(Hotel(**item))
-                        update["hotel_pool"].extend(hotels)
-                        logger.info(f"已将 {len(hotels)} 个酒店添加到酒店池")
-                except Exception as e:
-                    logger.error(f"解析酒店结构化数据失败: {e}")
+            _apply_task_result_to_update(update, task_type, structured_data, state)
     
     update["plan"] = plan
     update["sub_agent_results"] = sub_agent_results
@@ -433,8 +471,28 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
                     logger.info(f"selection 任务 '{task_item.task}' 的依赖未满足，跳过执行")
                     continue
             
+            writer({
+                "type": "sub_agent_start",
+                "task_name": task_item.task,
+                "task_type": task_item.type,
+                "task_type_display": SUB_AGENT_DISPLAY_NAMES.get(task_item.type, task_item.type),
+                "task_icon": SUB_AGENT_DISPLAY_ICONS.get(task_item.type, "⚙️"),
+                "is_parallel": False,
+            })
+            
             result = await _execute_single_task(task_item, task_idx, temp_state)
             task_idx_r, task_name, task_type, task_result, structured_data, error = result
+            
+            writer({
+                "type": "sub_agent_end",
+                "task_name": task_item.task,
+                "task_type": task_item.type,
+                "task_type_display": SUB_AGENT_DISPLAY_NAMES.get(task_item.type, task_item.type),
+                "task_icon": SUB_AGENT_DISPLAY_ICONS.get(task_item.type, "⚙️"),
+                "status": "completed" if error is None else "failed",
+                "error": error,
+                "is_parallel": False,
+            })
             
             if error:
                 plan[task_idx].status = "failed"
@@ -505,13 +563,23 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     return update
 
 
-def summarize_node(state: TravelPlannerState) -> dict:
+async def summarize_node(state: TravelPlannerState) -> dict:
     """
     总结节点。
     生成最终旅游规划的文本描述。
     如果 trip_plan 已经由 selection 任务创建，则只生成文本描述；
     否则，先进行景点和酒店选择，再生成文本描述。
+    通过 get_stream_writer 实时推送总结节点的执行进度。
     """
+    from langgraph.config import get_stream_writer
+    
+    writer = get_stream_writer()
+    
+    writer({
+        "type": "summarize_start",
+        "message": "正在生成完整的旅行规划",
+    })
+    
     model = get_summary_model()
     
     sub_agent_results = state.sub_agent_results
@@ -519,6 +587,11 @@ def summarize_node(state: TravelPlannerState) -> dict:
     user_request = state.messages[0].content if state.messages else ""
     
     if not trip_request:
+        writer({
+            "type": "summarize_end",
+            "status": "failed",
+            "message": "缺少旅行请求信息",
+        })
         return {
             "trip_plan": None,
             "messages": [AIMessage(content="缺少旅行请求信息")],
@@ -526,15 +599,29 @@ def summarize_node(state: TravelPlannerState) -> dict:
     
     trip_plan = state.trip_plan
     if not trip_plan or not trip_plan.days:
-        trip_plan = _create_trip_plan_from_selection(state, model)
+        writer({
+            "type": "summarize_progress",
+            "message": "正在分配景点和酒店到每日行程...",
+        })
+        trip_plan = await _create_trip_plan_from_selection(state, model)
     
     if not trip_plan:
+        writer({
+            "type": "summarize_end",
+            "status": "failed",
+            "message": "无法生成旅行计划",
+        })
         return {
             "trip_plan": None,
             "messages": [AIMessage(content="无法生成旅行计划")],
         }
     
-    detailed_description = _generate_detailed_description(
+    writer({
+        "type": "summarize_progress",
+        "message": "正在生成详细的旅行规划描述...",
+    })
+    
+    detailed_description = await _generate_detailed_description(
         trip_plan=trip_plan,
         sub_agent_results=sub_agent_results,
         user_request=user_request,
@@ -542,6 +629,12 @@ def summarize_node(state: TravelPlannerState) -> dict:
     )
     
     trip_plan.overall_suggestions = detailed_description
+    
+    writer({
+        "type": "summarize_end",
+        "status": "completed",
+        "message": "旅行规划生成完成",
+    })
     
     return {
         "trip_plan": trip_plan,
@@ -553,7 +646,7 @@ def summarize_node(state: TravelPlannerState) -> dict:
     }
 
 
-def _create_trip_plan_from_selection(state: TravelPlannerState, model) -> TripPlan:
+async def _create_trip_plan_from_selection(state: TravelPlannerState, model) -> TripPlan:
     """从景点池和酒店池创建旅行计划
     
     Args:
@@ -600,7 +693,7 @@ def _create_trip_plan_from_selection(state: TravelPlannerState, model) -> TripPl
     ])
     
     chain = prompt | model.with_structured_output(DayPlanSelection)
-    selection_result = chain.invoke({"selection_prompt": selection_prompt})
+    selection_result = await chain.ainvoke({"selection_prompt": selection_prompt})
     
     trip_plan = _build_trip_plan_from_selection(
         selection_result=selection_result,
@@ -829,7 +922,7 @@ def _build_trip_plan_from_selection(
     return trip_plan
 
 
-def _generate_detailed_description(
+async def _generate_detailed_description(
     trip_plan,
     sub_agent_results: list,
     user_request: str,
@@ -877,7 +970,7 @@ def _generate_detailed_description(
     ])
     
     chain = summary_prompt | model
-    result = chain.invoke({
+    result = await chain.ainvoke({
         "user_request": user_request,
         "results": results_text,
         "weather": weather_text,

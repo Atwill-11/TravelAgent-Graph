@@ -4,6 +4,7 @@
 1. 扫描并增量添加新文档
 2. 重建整个知识库
 3. 查看已加载文档列表
+4. 评估RAG检索质量（Recall@K/Precision@K/MRR）
 """
 
 from typing import Any, Dict, List, Optional
@@ -77,6 +78,55 @@ class DocumentListResponse(BaseModel):
 
     total: int = Field(description="文档总数")
     documents: List[DocumentInfo] = Field(description="文档列表")
+
+
+class EvalRequest(BaseModel):
+    """RAG评估请求模型。"""
+
+    k_values: Optional[List[int]] = Field(
+        None,
+        description="评估的K值列表，默认[1, 3, 5, 10]"
+    )
+
+
+class EvalSummary(BaseModel):
+    """评估指标汇总。"""
+
+    recall_at_1: Optional[float] = Field(None, alias="recall@1", description="Recall@1")
+    precision_at_1: Optional[float] = Field(None, alias="precision@1", description="Precision@1")
+    recall_at_3: Optional[float] = Field(None, alias="recall@3", description="Recall@3")
+    precision_at_3: Optional[float] = Field(None, alias="precision@3", description="Precision@3")
+    recall_at_5: Optional[float] = Field(None, alias="recall@5", description="Recall@5")
+    precision_at_5: Optional[float] = Field(None, alias="precision@5", description="Precision@5")
+    recall_at_10: Optional[float] = Field(None, alias="recall@10", description="Recall@10")
+    precision_at_10: Optional[float] = Field(None, alias="precision@10", description="Precision@10")
+    mrr: Optional[float] = Field(None, description="Mean Reciprocal Rank")
+
+    class Config:
+        populate_by_name = True
+
+
+class PerQueryResult(BaseModel):
+    """单条查询的评估结果。"""
+
+    query_id: str = Field(description="查询ID")
+    query: str = Field(description="查询文本")
+    total_relevant: int = Field(description="全库相关文档数")
+    retrieved_count: int = Field(description="检索返回文档数")
+    relevant_in_retrieved: int = Field(description="检索结果中相关文档数")
+    mrr: float = Field(description="Reciprocal Rank")
+    extra_metrics: Optional[Dict[str, float]] = Field(
+        None, description="各K值下的Recall@K和Precision@K"
+    )
+
+
+class EvalResponse(BaseModel):
+    """RAG评估响应模型。"""
+
+    summary: Dict[str, float] = Field(description="汇总指标")
+    query_count: int = Field(description="评估查询总数")
+    k_values: List[int] = Field(description="评估使用的K值列表")
+    per_query: List[Dict[str, Any]] = Field(description="逐条查询评估详情")
 
 
 @router.post(
@@ -260,4 +310,70 @@ async def get_loaded_documents(request: Request) -> DocumentListResponse:
         raise HTTPException(
             status_code=500,
             detail=f"获取已加载文档列表失败: {str(e)}"
+        )
+
+
+@router.post(
+    "/evaluate",
+    response_model=EvalResponse,
+    summary="评估RAG检索质量",
+    description="""
+对RAG检索质量进行系统性评估，输出Recall@K、Precision@K、MRR等指标。
+
+**评估指标说明：**
+- **Recall@K**：在所有相关文档中，top-K检索结果覆盖的比例
+  - 衡量检索系统的查全能力，值越高表示遗漏的相关文档越少
+- **Precision@K**：top-K检索结果中，相关文档的比例
+  - 衡量检索系统的查准能力，值越高表示返回的噪声越少
+- **MRR（Mean Reciprocal Rank）**：第一个相关文档排名倒数的均值
+  - 衡量检索系统将相关文档排在靠前位置的能力
+
+**参数说明：**
+- `k_values`: 评估的K值列表，默认[1, 3, 5, 10]
+
+**返回说明：**
+- `summary`: 各指标的汇总均值
+- `query_count`: 评估的查询总数
+- `k_values`: 评估使用的K值列表
+- `per_query`: 每条查询的详细评估结果
+    """,
+)
+async def evaluate_rag_retrieval(
+    request: Request,
+    body: EvalRequest,
+) -> EvalResponse:
+    """评估RAG检索质量。"""
+    try:
+        rm = get_resource_manager()
+        rag_pipeline = rm.rag_pipeline
+
+        if rag_pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="RAG流水线未初始化，请检查应用启动日志"
+            )
+
+        from app.core.langgraph.rag.evaluator import RAGEvaluator
+
+        evaluator = RAGEvaluator(rag_pipeline)
+
+        logger.info("开始RAG检索质量评估", k_values=body.k_values)
+
+        report = await evaluator.evaluate(k_values=body.k_values)
+
+        logger.info(
+            "RAG检索质量评估完成",
+            summary=report.get("summary"),
+            query_count=report.get("query_count"),
+        )
+
+        return EvalResponse(**report)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("RAG检索质量评估失败", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"RAG检索质量评估失败: {str(e)}"
         )

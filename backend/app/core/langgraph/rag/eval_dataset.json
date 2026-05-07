@@ -1,0 +1,177 @@
+[
+  {
+    "query_id": "q01",
+    "query": "成都美食推荐",
+    "relevant_cities": ["chengdu"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["火锅", "串串香", "担担面", "龙抄手", "兔头", "甜水面"]
+  },
+  {
+    "query_id": "q02",
+    "query": "北京必游景点有哪些",
+    "relevant_cities": ["beijing"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["故宫", "长城", "天坛", "颐和园", "天安门", "南锣鼓巷", "798"]
+  },
+  {
+    "query_id": "q03",
+    "query": "西安怎么去最方便",
+    "relevant_cities": ["xian"],
+    "relevant_sections": ["交通指南"],
+    "relevant_keywords": ["飞机", "高铁", "机场", "火车站", "咸阳"]
+  },
+  {
+    "query_id": "q04",
+    "query": "杭州什么时候去最好",
+    "relevant_cities": ["hangzhou"],
+    "relevant_sections": ["最佳旅游时间"],
+    "relevant_keywords": ["春季", "秋季", "3月", "4月", "5月", "9月", "10月", "11月"]
+  },
+  {
+    "query_id": "q05",
+    "query": "丽江旅行注意事项",
+    "relevant_cities": ["lijiang"],
+    "relevant_sections": ["旅行贴士"],
+    "relevant_keywords": ["高原反应", "防晒", "紫外线", "氧气瓶", "预订"]
+  },
+  {
+    "query_id": "q06",
+    "query": "上海住在哪里比较方便",
+    "relevant_cities": ["shanghai"],
+    "relevant_sections": ["住宿建议"],
+    "relevant_keywords": ["外滩", "南京路", "陆家嘴", "静安寺", "豫园"]
+  },
+  {
+    "query_id": "q07",
+    "query": "北京故宫博物院游览攻略",
+    "relevant_cities": ["beijing"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["故宫", "紫禁城", "午门", "珍宝馆", "钟表馆"]
+  },
+  {
+    "query_id": "q08",
+    "query": "成都大熊猫基地怎么游览",
+    "relevant_cities": ["chengdu"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["大熊猫", "熊猫基地", "小熊猫"]
+  },
+  {
+    "query_id": "q09",
+    "query": "西安羊肉泡馍去哪吃",
+    "relevant_cities": ["xian"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["羊肉泡馍", "老孙家", "同盛祥"]
+  },
+  {
+    "query_id": "q10",
+    "query": "杭州西湖怎么玩",
+    "relevant_cities": ["hangzhou"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["西湖", "苏堤", "断桥", "雷峰塔", "三潭印月"]
+  },
+  {
+    "query_id": "q11",
+    "query": "丽江玉龙雪山需要准备什么",
+    "relevant_cities": ["lijiang"],
+    "relevant_sections": ["必游景点", "旅行贴士"],
+    "relevant_keywords": ["玉龙雪山", "索道", "氧气", "高原反应", "蓝月谷"]
+  },
+  {
+    "query_id": "q12",
+    "query": "上海外滩夜景",
+    "relevant_cities": ["shanghai"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["外滩", "黄浦江", "万国建筑", "陆家嘴"]
+  },
+  {
+    "query_id": "q13",
+    "query": "成都宽窄巷子值得去吗",
+    "relevant_cities": ["chengdu"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["宽窄巷子", "宽巷子", "窄巷子", "井巷子"]
+  },
+  {
+    "query_id": "q14",
+    "query": "北京烤鸭推荐哪家",
+    "relevant_cities": ["beijing"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["烤鸭", "全聚德", "大董", "四季民福"]
+  },
+  {
+    "query_id": "q15",
+    "query": "西安兵马俑参观建议",
+    "relevant_cities": ["xian"],
+    "relevant_sections": ["必游景点", "旅行贴士"],
+    "relevant_keywords": ["兵马俑", "秦始皇", "导游", "讲解"]
+  },
+  {
+    "query_id": "q16",
+    "query": "杭州龙井茶哪里买",
+    "relevant_cities": ["hangzhou"],
+    "relevant_sections": ["必游景点", "旅行贴士"],
+    "relevant_keywords": ["龙井", "龙井村", "茶叶", "明前茶"]
+  },
+  {
+    "query_id": "q17",
+    "query": "丽江泸沽湖怎么去",
+    "relevant_cities": ["lijiang"],
+    "relevant_sections": ["必游景点", "交通指南"],
+    "relevant_keywords": ["泸沽湖", "摩梭", "走婚", "猪槽船", "篝火"]
+  },
+  {
+    "query_id": "q18",
+    "query": "上海迪士尼乐园攻略",
+    "relevant_cities": ["shanghai"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["迪士尼", "迪士尼乐园", "城堡"]
+  },
+  {
+    "query_id": "q19",
+    "query": "春季适合去哪个城市旅游",
+    "relevant_cities": [],
+    "relevant_sections": ["最佳旅游时间"],
+    "relevant_keywords": ["春季", "3月", "4月", "5月", "百花"]
+  },
+  {
+    "query_id": "q20",
+    "query": "火锅推荐",
+    "relevant_cities": [],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["火锅"]
+  },
+  {
+    "query_id": "q21",
+    "query": "哪些城市有地铁",
+    "relevant_cities": [],
+    "relevant_sections": ["交通指南"],
+    "relevant_keywords": ["地铁"]
+  },
+  {
+    "query_id": "q22",
+    "query": "古镇旅游推荐",
+    "relevant_cities": [],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["古镇", "古城", "古街"]
+  },
+  {
+    "query_id": "q23",
+    "query": "成都住宿区域选择",
+    "relevant_cities": ["chengdu"],
+    "relevant_sections": ["住宿建议"],
+    "relevant_keywords": ["春熙路", "太古里", "宽窄巷子", "武侯祠"]
+  },
+  {
+    "query_id": "q24",
+    "query": "西安回民街美食",
+    "relevant_cities": ["xian"],
+    "relevant_sections": ["必游景点", "美食推荐"],
+    "relevant_keywords": ["回民街", "羊肉泡馍", "肉夹馍", "凉皮"]
+  },
+  {
+    "query_id": "q25",
+    "query": "高原反应怎么预防",
+    "relevant_cities": ["lijiang"],
+    "relevant_sections": ["旅行贴士", "必游景点"],
+    "relevant_keywords": ["高原反应", "氧气", "海拔", "剧烈运动"]
+  }
+]

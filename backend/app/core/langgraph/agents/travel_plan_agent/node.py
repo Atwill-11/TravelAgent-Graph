@@ -208,181 +208,301 @@ def plan_node(state: TravelPlannerState) -> dict:
         }
 
 
-async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
+INDEPENDENT_TASK_TYPES = {"weather", "attraction", "hotel", "rag"}
+DEPENDENT_TASK_TYPES = {"selection"}
+
+
+def _check_selection_dependencies(state: TravelPlannerState) -> bool:
+    """检查 selection 任务的依赖是否满足。
+    
+    selection 需要 attraction 和 hotel 的结果。
     """
-    执行子智能体节点。
-    按顺序执行待处理的子任务。
+    completed_types = set()
+    for result in state.sub_agent_results:
+        completed_types.add(result.type)
+    
+    has_attraction = "attraction" in completed_types or len(state.attraction_pool) > 0
+    has_hotel = "hotel" in completed_types or len(state.hotel_pool) > 0
+    
+    return has_attraction and has_hotel
+
+
+async def _execute_single_task(
+    task_item: TaskItem,
+    task_idx: int,
+    state: TravelPlannerState,
+) -> tuple[int, str, str, dict | None, dict | None]:
+    """执行单个子智能体任务。
+    
+    Returns:
+        (task_idx, task_name, task_type, task_result, structured_data, error)
     """
-    plan = state.plan
-    sub_agent_results = state.sub_agent_results
-    
-    # 找到第一个待执行的任务
-    current_task_idx = None
-    for idx, task_item in enumerate(plan):
-        if task_item.status == "pending":
-            current_task_idx = idx
-            break
-    
-    if current_task_idx is None:
-        return {"current_task": None}
-    
-    task_item = plan[current_task_idx]
     task_name = task_item.task
     task_type = task_item.type
     
-    # 获取对应的子智能体
     sub_agent_func = SUB_AGENT_MAP.get(task_type)
     if not sub_agent_func:
-        # 将未知任务类型标记为已完成（跳过）
-        plan[current_task_idx].status = "completed"
-        plan[current_task_idx].result = f"跳过：'{task_type}' 不是有效的子智能体类型"
-        
-        logger.warning(f"警告：跳过未知任务类型 '{task_type}' - {task_name}")
-        
-        return {
-            "plan": plan,
-            "current_task": task_name,
-            "messages": [AIMessage(content=f"⚠️ 跳过任务: {task_name} (未知任务类型: {task_type})")],
-        }
+        return (task_idx, task_name, task_type, f"跳过：'{task_type}' 不是有效的子智能体类型", None, None)
     
-    # 执行子智能体
     try:
         if task_type == "selection":
-            query = _build_selection_query(
-                state=state,
-                task_description=task_name,
-            )
+            query = _build_selection_query(state=state, task_description=task_name)
         elif task_type == "attraction":
-            query = _build_attraction_query(
-                state=state,
-                task_description=task_name,
-            )
+            query = _build_attraction_query(state=state, task_description=task_name)
         else:
             query = task_name
         
         result = await sub_agent_func.ainvoke({"query": query})
-
+        
         if isinstance(result, dict) and "text" in result:
             task_result = result["text"]
             structured_data = result.get("structured_data")
         else:
             task_result = result if isinstance(result, str) else str(result)
             structured_data = None
-
-        # 更新任务状态
-        plan[current_task_idx].status = "completed"
-        plan[current_task_idx].result = task_result
-
-        sub_agent_results.append(
-            SubAgentResult(
-                task=task_name,
-                type=task_type,
-                result=task_result,
-                structured_data=structured_data,
-            )
-        )
-
-        update = {
-            "plan": plan,
-            "sub_agent_results": sub_agent_results,
-            "current_task": task_name,
-            "messages": [AIMessage(content=f"✅ 任务完成: {task_name}")],
-        }
-
-        if task_type == "weather" and structured_data:
-            try:
-                weather_data = TravelWeatherData(**structured_data)
-                if state.trip_plan:
-                    trip_plan = state.trip_plan.model_copy(update={"weather_info": weather_data})
-                else:
-                    trip_plan = TripPlan(
-                        city=state.trip_request.city if state.trip_request else "",
-                        start_date=state.trip_request.start_date if state.trip_request else "",
-                        end_date=state.trip_request.end_date if state.trip_request else "",
-                        days=[],
-                        weather_info=weather_data,
-                        overall_suggestions="",
-                    )
-                update["trip_plan"] = trip_plan
-            except Exception as e:
-                logger.error(f"解析天气结构化数据失败: {e}")
-
-        if task_type == "attraction" and structured_data:
-            try:
-                from app.schemas.travel.components import Attraction
-                if isinstance(structured_data, list):
-                    attractions = []
-                    for item in structured_data:
-                        if isinstance(item, Attraction):
-                            attractions.append(item)
-                        elif isinstance(item, dict):
-                            attractions.append(Attraction(**item))
-                    update["attraction_pool"] = state.attraction_pool + attractions
-                    logger.info(f"已将 {len(attractions)} 个景点添加到景点池")
-            except Exception as e:
-                logger.error(f"解析景点结构化数据失败: {e}")
-                import traceback
-                traceback.print_exc()
-
-        if task_type == "hotel" and structured_data:
-            try:
-                from app.schemas.travel.components import Hotel
-                if isinstance(structured_data, list):
-                    hotels = []
-                    for item in structured_data:
-                        if isinstance(item, Hotel):
-                            hotels.append(item)
-                        elif isinstance(item, dict):
-                            hotels.append(Hotel(**item))
-                    update["hotel_pool"] = state.hotel_pool + hotels
-                    logger.info(f"已将 {len(hotels)} 个酒店添加到酒店池")
-            except Exception as e:
-                logger.error(f"解析酒店结构化数据失败: {e}")
-                import traceback
-                traceback.print_exc()
-
-        if task_type == "selection" and structured_data:
-            try:
-                from app.schemas.travel.selection import DayPlanSelection
-                if isinstance(structured_data, DayPlanSelection):
-                    selection_result = structured_data
-                elif isinstance(structured_data, dict):
-                    selection_result = DayPlanSelection(**structured_data)
-                else:
-                    raise ValueError(f"未知的 structured_data 类型: {type(structured_data)}")
-                
-                trip_request = state.trip_request
-                if trip_request:
-                    start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
-                    travel_days = trip_request.travel_days
-                    weather_info = state.trip_plan.weather_info if state.trip_plan else None
-                    
-                    trip_plan = _build_trip_plan_from_selection(
-                        selection_result=selection_result,
-                        attraction_pool=state.attraction_pool,
-                        hotel_pool=state.hotel_pool,
-                        trip_request=trip_request,
-                        start_date=start_date,
-                        travel_days=travel_days,
-                        weather_info=weather_info,
-                    )
-                    update["trip_plan"] = trip_plan
-                    logger.info("已根据选择结果更新旅行计划")
-            except Exception as e:
-                logger.error(f"解析选择结果失败: {e}")
-                import traceback
-                traceback.print_exc()
-
-        return update
+        
+        return (task_idx, task_name, task_type, task_result, structured_data, None)
     except Exception as e:
-        plan[current_task_idx].status = "failed"
-        plan[current_task_idx].result = f"执行失败: {str(e)}"
+        return (task_idx, task_name, task_type, None, None, str(e))
 
-        return {
-            "plan": plan,
-            "current_task": task_name,
-            "messages": [AIMessage(content=f"❌ 任务失败: {task_name} - {str(e)}")],
-        }
+
+async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
+    """
+    执行子智能体节点。
+    并行执行独立的子任务，依赖任务等待前置任务完成。
+    
+    任务依赖关系：
+    - weather, attraction, hotel, rag: 独立任务，可并行执行
+    - selection: 依赖 attraction 和 hotel，需等待它们完成
+    """
+    import asyncio
+    
+    plan = list(state.plan)
+    sub_agent_results = list(state.sub_agent_results)
+    
+    pending_tasks = []
+    for idx, task_item in enumerate(plan):
+        if task_item.status == "pending":
+            pending_tasks.append((idx, task_item))
+    
+    if not pending_tasks:
+        return {"current_task": None}
+    
+    independent_tasks = []
+    dependent_tasks = []
+    
+    for idx, task_item in pending_tasks:
+        if task_item.type in INDEPENDENT_TASK_TYPES:
+            independent_tasks.append((idx, task_item))
+        elif task_item.type in DEPENDENT_TASK_TYPES:
+            dependent_tasks.append((idx, task_item))
+        else:
+            independent_tasks.append((idx, task_item))
+    
+    update = {
+        "plan": plan,
+        "sub_agent_results": sub_agent_results,
+        "current_task": None,
+        "messages": [],
+        "attraction_pool": list(state.attraction_pool),
+        "hotel_pool": list(state.hotel_pool),
+    }
+    
+    completed_task_names = []
+    
+    if independent_tasks:
+        logger.info(f"开始并行执行 {len(independent_tasks)} 个独立任务")
+        
+        tasks = [
+            _execute_single_task(task_item, idx, state)
+            for idx, task_item in independent_tasks
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for i, result in enumerate(results):
+            task_idx, task_item = independent_tasks[i]
+            
+            if isinstance(result, Exception):
+                plan[task_idx].status = "failed"
+                plan[task_idx].result = f"执行失败: {str(result)}"
+                update["messages"].append(
+                    AIMessage(content=f"❌ 任务失败: {task_item.task} - {str(result)}")
+                )
+                continue
+            
+            task_idx_r, task_name, task_type, task_result, structured_data, error = result
+            
+            if error:
+                plan[task_idx].status = "failed"
+                plan[task_idx].result = f"执行失败: {error}"
+                update["messages"].append(
+                    AIMessage(content=f"❌ 任务失败: {task_name} - {error}")
+                )
+                continue
+            
+            if task_result and task_result.startswith("跳过："):
+                plan[task_idx].status = "completed"
+                plan[task_idx].result = task_result
+                update["messages"].append(
+                    AIMessage(content=f"⚠️ 跳过任务: {task_name}")
+                )
+                continue
+            
+            plan[task_idx].status = "completed"
+            plan[task_idx].result = task_result
+            
+            sub_agent_results.append(
+                SubAgentResult(
+                    task=task_name,
+                    type=task_type,
+                    result=task_result,
+                    structured_data=structured_data,
+                )
+            )
+            completed_task_names.append(task_name)
+            
+            if task_type == "weather" and structured_data:
+                try:
+                    weather_data = TravelWeatherData(**structured_data)
+                    if state.trip_plan:
+                        trip_plan = state.trip_plan.model_copy(update={"weather_info": weather_data})
+                    else:
+                        trip_plan = TripPlan(
+                            city=state.trip_request.city if state.trip_request else "",
+                            start_date=state.trip_request.start_date if state.trip_request else "",
+                            end_date=state.trip_request.end_date if state.trip_request else "",
+                            days=[],
+                            weather_info=weather_data,
+                            overall_suggestions="",
+                        )
+                    update["trip_plan"] = trip_plan
+                except Exception as e:
+                    logger.error(f"解析天气结构化数据失败: {e}")
+            
+            if task_type == "attraction" and structured_data:
+                try:
+                    from app.schemas.travel.components import Attraction
+                    if isinstance(structured_data, list):
+                        attractions = []
+                        for item in structured_data:
+                            if isinstance(item, Attraction):
+                                attractions.append(item)
+                            elif isinstance(item, dict):
+                                attractions.append(Attraction(**item))
+                        update["attraction_pool"].extend(attractions)
+                        logger.info(f"已将 {len(attractions)} 个景点添加到景点池")
+                except Exception as e:
+                    logger.error(f"解析景点结构化数据失败: {e}")
+            
+            if task_type == "hotel" and structured_data:
+                try:
+                    from app.schemas.travel.components import Hotel
+                    if isinstance(structured_data, list):
+                        hotels = []
+                        for item in structured_data:
+                            if isinstance(item, Hotel):
+                                hotels.append(item)
+                            elif isinstance(item, dict):
+                                hotels.append(Hotel(**item))
+                        update["hotel_pool"].extend(hotels)
+                        logger.info(f"已将 {len(hotels)} 个酒店添加到酒店池")
+                except Exception as e:
+                    logger.error(f"解析酒店结构化数据失败: {e}")
+    
+    update["plan"] = plan
+    update["sub_agent_results"] = sub_agent_results
+    
+    if dependent_tasks:
+        temp_state = TravelPlannerState(
+            trip_request=state.trip_request,
+            messages=state.messages,
+            plan=plan,
+            sub_agent_results=sub_agent_results,
+            current_task=None,
+            trip_plan=update.get("trip_plan", state.trip_plan),
+            notes=state.notes,
+            user_feedback=state.user_feedback,
+            attraction_pool=update["attraction_pool"],
+            hotel_pool=update["hotel_pool"],
+        )
+        
+        for task_idx, task_item in dependent_tasks:
+            if task_item.type == "selection":
+                if not _check_selection_dependencies(temp_state):
+                    logger.info(f"selection 任务 '{task_item.task}' 的依赖未满足，跳过执行")
+                    continue
+            
+            result = await _execute_single_task(task_item, task_idx, temp_state)
+            task_idx_r, task_name, task_type, task_result, structured_data, error = result
+            
+            if error:
+                plan[task_idx].status = "failed"
+                plan[task_idx].result = f"执行失败: {error}"
+                update["messages"].append(
+                    AIMessage(content=f"❌ 任务失败: {task_name} - {error}")
+                )
+                continue
+            
+            plan[task_idx].status = "completed"
+            plan[task_idx].result = task_result
+            
+            sub_agent_results.append(
+                SubAgentResult(
+                    task=task_name,
+                    type=task_type,
+                    result=task_result,
+                    structured_data=structured_data,
+                )
+            )
+            completed_task_names.append(task_name)
+            
+            if task_type == "selection" and structured_data:
+                try:
+                    from app.schemas.travel.selection import DayPlanSelection
+                    if isinstance(structured_data, DayPlanSelection):
+                        selection_result = structured_data
+                    elif isinstance(structured_data, dict):
+                        selection_result = DayPlanSelection(**structured_data)
+                    else:
+                        raise ValueError(f"未知的 structured_data 类型: {type(structured_data)}")
+                    
+                    trip_request = state.trip_request
+                    if trip_request:
+                        start_date = datetime.strptime(trip_request.start_date, "%Y-%m-%d")
+                        travel_days = trip_request.travel_days
+                        weather_info = temp_state.trip_plan.weather_info if temp_state.trip_plan else None
+                        
+                        trip_plan = _build_trip_plan_from_selection(
+                            selection_result=selection_result,
+                            attraction_pool=update["attraction_pool"],
+                            hotel_pool=update["hotel_pool"],
+                            trip_request=trip_request,
+                            start_date=start_date,
+                            travel_days=travel_days,
+                            weather_info=weather_info,
+                        )
+                        update["trip_plan"] = trip_plan
+                        logger.info("已根据选择结果更新旅行计划")
+                except Exception as e:
+                    logger.error(f"解析选择结果失败: {e}")
+    
+    update["plan"] = plan
+    update["sub_agent_results"] = sub_agent_results
+    
+    if completed_task_names:
+        if len(completed_task_names) == 1:
+            update["messages"].insert(0, AIMessage(content=f"✅ 任务完成: {completed_task_names[0]}"))
+        else:
+            update["messages"].insert(
+                0, 
+                AIMessage(content=f"✅ 并行完成 {len(completed_task_names)} 个任务: {', '.join(completed_task_names)}")
+            )
+        update["current_task"] = completed_task_names[-1]
+    else:
+        update["messages"].insert(0, AIMessage(content="本轮未完成任何任务"))
+    
+    return update
 
 
 def summarize_node(state: TravelPlannerState) -> dict:
@@ -495,10 +615,24 @@ def _create_trip_plan_from_selection(state: TravelPlannerState, model) -> TripPl
     return trip_plan
 
 def should_continue(state: TravelPlannerState) -> Literal["execute", "summarize"]:
-    """判断是否还有待执行的任务"""
+    """判断是否还有可执行的任务。
+    
+    检查逻辑：
+    1. 如果有 pending 的独立任务，继续执行
+    2. 如果有 pending 的 selection 任务且依赖满足，继续执行
+    3. 否则进入 summarize 节点
+    """
     for task_item in state.plan:
-        if task_item.status == "pending":
+        if task_item.status != "pending":
+            continue
+        
+        if task_item.type in INDEPENDENT_TASK_TYPES:
             return "execute"
+        
+        if task_item.type in DEPENDENT_TASK_TYPES:
+            if _check_selection_dependencies(state):
+                return "execute"
+    
     return "summarize"
 
 

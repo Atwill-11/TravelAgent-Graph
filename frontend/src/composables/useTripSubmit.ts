@@ -78,6 +78,14 @@ export function useTripSubmit() {
         },
         onExecuteStart: (data: SSEExecuteStartEvent) => {
           loadingStatus.value = data.message;
+          thinkingSteps.value
+            .filter(
+              (s) =>
+                s.status === "running" && !s.node.startsWith("execute-"),
+            )
+            .forEach((s) => {
+              s.status = "completed";
+            });
           addThinkingStep(
             `execute-${data.task_type}-${Date.now()}`,
             data.is_parallel

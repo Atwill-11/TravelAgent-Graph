@@ -212,6 +212,14 @@ const handleModifyPlan = async () => {
           });
         },
         onExecuteStart: (data) => {
+          thinkingSteps.value
+            .filter(
+              (s) =>
+                s.status === "running" && !s.node.startsWith("execute-"),
+            )
+            .forEach((s) => {
+              s.status = "completed";
+            });
           addThinkingStep({
             id: `execute-${data.task_type}-${Date.now()}`,
             node: `execute-${data.task_type}`,

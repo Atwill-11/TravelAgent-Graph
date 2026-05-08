@@ -280,6 +280,7 @@ export async function generateTripPlanStream(
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let currentEvent = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -289,7 +290,6 @@ export async function generateTripPlanStream(
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
-        let currentEvent = "";
         for (const line of lines) {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
@@ -343,6 +343,65 @@ export async function generateTripPlanStream(
               }
             } catch (error) {
               console.error(`[SSE] Error parsing JSON for event ${currentEvent}:`, error, jsonStr);
+            }
+            currentEvent = "";
+          }
+        }
+      }
+
+      const remaining = decoder.decode();
+      if (remaining) {
+        buffer += remaining;
+      }
+      if (buffer.trim()) {
+        const lines = buffer.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const jsonStr = line.slice(6);
+            try {
+              const data = JSON.parse(jsonStr);
+              switch (currentEvent) {
+                case "start":
+                  handlers.onStart?.(data as SSEStartEvent);
+                  break;
+                case "plan":
+                  handlers.onPlan?.(data as SSEPlanEvent);
+                  break;
+                case "execute_start":
+                  handlers.onExecuteStart?.(data as SSEExecuteStartEvent);
+                  break;
+                case "execute_end":
+                  handlers.onExecuteEnd?.(data as SSEExecuteEndEvent);
+                  break;
+                case "execute":
+                  handlers.onExecute?.(data as SSEExecuteEvent);
+                  break;
+                case "summarize_start":
+                  handlers.onSummarizeStart?.(data as SSESummarizeStartEvent);
+                  break;
+                case "summarize_progress":
+                  handlers.onSummarizeProgress?.(data as SSESummarizeProgressEvent);
+                  break;
+                case "summarize_end":
+                  handlers.onSummarizeEnd?.(data as SSESummarizeEndEvent);
+                  break;
+                case "summarize":
+                  handlers.onSummarize?.(data as SSESummarizeEvent);
+                  break;
+                case "review":
+                  handlers.onReview?.(data as SSEReviewEvent);
+                  break;
+                case "done":
+                  handlers.onDone?.(data as SSEDoneEvent);
+                  break;
+                case "error":
+                  handlers.onError?.(data as SSEErrorEvent);
+                  break;
+              }
+            } catch {
+              // skip invalid JSON in remaining buffer
             }
             currentEvent = "";
           }
@@ -404,6 +463,7 @@ export async function resumeTripPlanStream(
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let currentEvent = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -413,7 +473,6 @@ export async function resumeTripPlanStream(
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
-      let currentEvent = "";
       for (const line of lines) {
         if (line.startsWith("event: ")) {
           currentEvent = line.slice(7).trim();
@@ -463,6 +522,65 @@ export async function resumeTripPlanStream(
             }
           } catch {
             // skip invalid JSON
+          }
+          currentEvent = "";
+        }
+      }
+    }
+
+    const remaining = decoder.decode();
+    if (remaining) {
+      buffer += remaining;
+    }
+    if (buffer.trim()) {
+      const lines = buffer.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          const jsonStr = line.slice(6);
+          try {
+            const data = JSON.parse(jsonStr);
+            switch (currentEvent) {
+              case "start":
+                handlers.onStart?.(data as SSEStartEvent);
+                break;
+              case "plan":
+                handlers.onPlan?.(data as SSEPlanEvent);
+                break;
+              case "execute_start":
+                handlers.onExecuteStart?.(data as SSEExecuteStartEvent);
+                break;
+              case "execute_end":
+                handlers.onExecuteEnd?.(data as SSEExecuteEndEvent);
+                break;
+              case "execute":
+                handlers.onExecute?.(data as SSEExecuteEvent);
+                break;
+              case "summarize_start":
+                handlers.onSummarizeStart?.(data as SSESummarizeStartEvent);
+                break;
+              case "summarize_progress":
+                handlers.onSummarizeProgress?.(data as SSESummarizeProgressEvent);
+                break;
+              case "summarize_end":
+                handlers.onSummarizeEnd?.(data as SSESummarizeEndEvent);
+                break;
+              case "summarize":
+                handlers.onSummarize?.(data as SSESummarizeEvent);
+                break;
+              case "review":
+                handlers.onReview?.(data as SSEReviewEvent);
+                break;
+              case "done":
+                handlers.onDone?.(data as SSEDoneEvent);
+                break;
+              case "error":
+                handlers.onError?.(data as SSEErrorEvent);
+                break;
+            }
+          } catch {
+            // skip invalid JSON in remaining buffer
           }
           currentEvent = "";
         }

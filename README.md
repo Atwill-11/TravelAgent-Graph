@@ -20,7 +20,6 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
 - 📚 **RAG 知识库检索**：基于 PGVectorStore 的旅游攻略知识库，支持语义检索增强生成
 - � **多轮对话交互**：基于 LangGraph interrupt() 实现用户审阅与交互式修改，支持旅行计划的迭代优化
 - � **长期记忆系统**：基于 AsyncPostgresStore + 向量搜索实现个性化推荐
-- 🔄 **LLM 多模型降级**：支持 OpenAI/Qwen 等多厂商模型，自动重试 + 环形降级
 - 📊 **全链路可观测**：集成 Langfuse 实现 Trace 级别的调用追踪与调试
 - 🌊 **SSE 流式响应**：实时展示 Agent 思考过程，支持断线重连与打字效果
 - ⚡ **生产级特性**：状态持久化、流式响应、速率限制、结构化日志、JWT 认证
@@ -151,6 +150,24 @@ TravelAgent-Graph 是一个**多智能体旅游规划系统**。项目基于 Lan
                                            └──────────────┘
 ```
 
+**RAG 检索质量评估**：
+
+系统提供完整的 RAG 检索质量离线评估框架，支持多维度指标量化检索效果：
+
+- **评估指标**：
+  - **Recall@K**：查全率，衡量 top-K 检索结果覆盖了多少比例的相关文档
+  - **Precision@K**：查准率，衡量 top-K 检索结果中相关文档的占比
+  - **MRR（Mean Reciprocal Rank）**：首个相关文档排名倒数的均值，衡量将相关文档排在靠前位置的能力
+
+- **评估流程**：
+  1. 加载评估数据集（`eval_dataset.json`，包含 25 条标注查询）
+  2. 对每条查询执行向量检索，获取 top-K 结果
+  3. 基于城市、章节、关键词判定检索结果的相关性
+  4. 统计全库相关文档数量，计算各指标
+  5. 输出汇总报告（summary）和逐条详情（per_query）
+
+- **评估数据集**：包含 25 条典型旅游查询，覆盖成都、北京、西安、杭州、丽江、上海等城市，每条查询标注了相关城市、章节和关键词
+
 ### 4. 多轮对话与交互式修改
 
 基于 LangGraph 的 `interrupt()` 机制实现完整的多轮对话流程，支持用户对旅行计划进行交互式修改：
@@ -267,9 +284,11 @@ TravelAgent-Graph/
 │   │   │   │   │   ├── sub_agents/         # 景点/酒店/天气/RAG/分配子 Agent
 │   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent（含流式运行函数）
 │   │   │   │   ├── rag/       # RAG 知识库检索模块
-│   │   │   │   │   ├── pipeline.py         # RAG Pipeline 核心实现
-│   │   │   │   │   ├── rag_tool.py         # RAG 工具封装
-│   │   │   │   │   └── knowledge_base/     # 旅游攻略知识库（Markdown）
+│   │   │   │   ├── pipeline.py         # RAG Pipeline 核心实现
+│   │   │   │   ├── rag_tool.py         # RAG 工具封装
+│   │   │   │   ├── evaluator.py        # RAG 检索质量评估器
+│   │   │   │   ├── eval_dataset.json    # 评估数据集（25条标注查询）
+│   │   │   │   └── knowledge_base/     # 旅游攻略知识库（Markdown）
 │   │   │   │   ├── tools/     # 工具定义
 │   │   │   │   │   ├── local/  # 本地工具（和风天气）
 │   │   │   │   │   └── mcp/    # MCP 工具（高德地图）
@@ -472,6 +491,13 @@ curl http://localhost:3001/health
 - `POST /api/v1/trip/plan` - 生成旅行计划（非流式）
 - `POST /api/v1/trip/plan/stream` - 流式生成旅行计划（SSE），实时展示 Agent 思考过程
 - `POST /api/v1/trip/plan/resume/stream` - 恢复并继续旅行规划（SSE），用于多轮对话中的修改操作
+
+### RAG 知识库管理
+
+- `POST /api/v1/rag/scan-and-add` - 扫描并增量添加新文档到知识库
+- `POST /api/v1/rag/rebuild` - 重建整个知识库（清空现有数据）
+- `GET /api/v1/rag/documents` - 获取已加载文档列表
+- `POST /api/v1/rag/evaluate` - 评估 RAG 检索质量（Recall@K/Precision@K/MRR）
 
 ### 健康检查
 

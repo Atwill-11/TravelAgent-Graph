@@ -59,7 +59,10 @@ services:
       - QWEATHER_API_KEY=${QWEATHER_API_KEY:-}
       - QWEATHER_API_HOST=${QWEATHER_API_HOST:-}
       - AMAP_API_KEY=${AMAP_API_KEY:-}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8000}
+      # CORS 配置：.env 文件中的 ALLOWED_ORIGINS 优先，否则使用以下默认值
+      # Docker 环境：frontend 通过 nginx 访问，origin 为 http://localhost:3001
+      # 同时支持直接访问后端 (7999) 和开发环境 (5173)
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001,http://127.0.0.1:3001,http://localhost:7999,http://127.0.0.1:7999,http://localhost:5173}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FORMAT=${LOG_FORMAT:-console}
       - LOG_DIR=${LOG_DIR:-../projectlogs}

@@ -23,27 +23,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuth } from '@/composables'
 
 const router = useRouter()
-const userEmail = ref('')
-
-const isLoggedIn = computed(() => !!localStorage.getItem('access_token'))
-
-onMounted(() => {
-  userEmail.value = localStorage.getItem('user_email') || ''
-})
+const { userEmail, isLoggedIn, logout } = useAuth()
 
 const goHome = () => {
   router.push('/')
 }
 
 const handleLogout = () => {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('session_token')
-  localStorage.removeItem('user_email')
-  userEmail.value = ''
+  logout()
   router.push('/login')
 }
 </script>

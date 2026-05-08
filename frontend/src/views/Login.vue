@@ -84,10 +84,12 @@ import { ref, reactive, computed } from "vue";
 import { useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import { loginUser, registerUser, createSession } from "@/services/api";
+import { useAuth } from "@/composables";
 
 const router = useRouter();
 const loading = ref(false);
 const isRegister = ref(false);
+const { login } = useAuth();
 
 const formState = reactive({
   email: "",
@@ -123,10 +125,9 @@ const handleSubmit = async () => {
       // 清除旧的会话信息，避免使用过期的 session_token
       localStorage.removeItem("session_token");
       localStorage.removeItem("session_id");
-      
+
       const loginRes = await loginUser(formState.email, formState.password);
-      localStorage.setItem("access_token", loginRes.access_token);
-      localStorage.setItem("user_email", formState.email);
+      login(formState.email, loginRes.access_token);
 
       try {
         const sessionRes = await createSession();
@@ -167,16 +168,28 @@ const handleSubmit = async () => {
 }
 
 .login-container::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: 
-    radial-gradient(circle at 20% 50%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
-    radial-gradient(circle at 80% 80%, rgba(252, 176, 69, 0.2) 0%, transparent 50%),
-    radial-gradient(circle at 40% 20%, rgba(102, 126, 234, 0.3) 0%, transparent 50%);
+  background:
+    radial-gradient(
+      circle at 20% 50%,
+      rgba(120, 119, 198, 0.3) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      circle at 80% 80%,
+      rgba(252, 176, 69, 0.2) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      circle at 40% 20%,
+      rgba(102, 126, 234, 0.3) 0%,
+      transparent 50%
+    );
   pointer-events: none;
 }
 
@@ -203,7 +216,11 @@ const handleSubmit = async () => {
   height: 400px;
   top: -150px;
   right: -100px;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.05) 70%);
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.05) 70%
+  );
 }
 
 .circle-2 {
@@ -212,11 +229,15 @@ const handleSubmit = async () => {
   bottom: -80px;
   left: -80px;
   animation-delay: 5s;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.04) 70%);
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.04) 70%
+  );
 }
 
 .circle::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 10%;
   left: 10%;
@@ -228,7 +249,8 @@ const handleSubmit = async () => {
 }
 
 @keyframes float {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0) rotate(0deg);
   }
   33% {
@@ -242,7 +264,7 @@ const handleSubmit = async () => {
 .login-card {
   width: 420px;
   border-radius: 20px;
-  box-shadow: 
+  box-shadow:
     0 25px 80px rgba(0, 0, 0, 0.3),
     0 10px 30px rgba(0, 0, 0, 0.2),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
@@ -255,13 +277,18 @@ const handleSubmit = async () => {
 }
 
 .login-card::before {
-  content: '';
+  content: "";
   position: absolute;
   top: -2px;
   left: -2px;
   right: -2px;
   bottom: -2px;
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.5), rgba(118, 75, 162, 0.5), rgba(240, 147, 251, 0.5));
+  background: linear-gradient(
+    135deg,
+    rgba(102, 126, 234, 0.5),
+    rgba(118, 75, 162, 0.5),
+    rgba(240, 147, 251, 0.5)
+  );
   border-radius: 22px;
   z-index: -1;
   opacity: 0;
@@ -300,7 +327,8 @@ const handleSubmit = async () => {
 }
 
 @keyframes iconBounce {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0);
   }
   50% {

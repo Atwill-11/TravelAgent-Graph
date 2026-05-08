@@ -309,9 +309,18 @@ async def _stream_event_generator(
                     }
                     yield f"event: step\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        interrupt_info = await get_graph_interrupt_state(session_id, thread_id)
+        logger.info("流式规划完成，开始检查中断状态", session_id=session_id, thread_id=thread_id)
+        
+        try:
+            interrupt_info = await get_graph_interrupt_state(session_id, thread_id)
+            logger.info("中断状态检查完成", session_id=session_id, thread_id=thread_id, has_interrupt=interrupt_info is not None)
+        except Exception as e:
+            logger.error("获取中断状态失败", session_id=session_id, thread_id=thread_id, error=str(e), exc_info=True)
+            interrupt_info = None
+        
         if interrupt_info:
             trip_plan_data = interrupt_info.get('trip_plan')
+            logger.info("发送review事件", session_id=session_id, thread_id=thread_id, has_trip_plan=trip_plan_data is not None)
             data = {
                 'node': 'user_review',
                 'display_name': NODE_DISPLAY_NAMES.get('user_review', '用户审阅'),
@@ -323,6 +332,7 @@ async def _stream_event_generator(
             }
             yield f"event: review\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
         else:
+            logger.info("发送done事件", session_id=session_id, thread_id=thread_id)
             yield f"event: done\ndata: {json.dumps({'message': '旅行计划生成完成！', 'success': True}, ensure_ascii=False)}\n\n"
 
     except Exception as e:

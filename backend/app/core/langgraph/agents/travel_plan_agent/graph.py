@@ -350,14 +350,22 @@ async def stream_travel_planner(
         "callbacks": [_get_langfuse_handler()],
     }
 
-    with propagate_attributes(**trace_attributes):
-        async for event in graph.astream(
-            initial_state,
-            context=context.model_dump(),
-            config=config,
-            stream_mode=["updates", "custom"],
-        ):
-            yield event
+    logger.info("开始执行图流式处理", session_id=session_id, thread_id=thread_id)
+    
+    try:
+        with propagate_attributes(**trace_attributes):
+            async for event in graph.astream(
+                initial_state,
+                context=context.model_dump(),
+                config=config,
+                stream_mode=["updates", "custom"],
+            ):
+                yield event
+        
+        logger.info("图流式处理完成", session_id=session_id, thread_id=thread_id)
+    except Exception as e:
+        logger.error("图流式处理异常", session_id=session_id, thread_id=thread_id, error=str(e), exc_info=True)
+        raise
     
     try:
         memory_manager = _get_memory_manager()

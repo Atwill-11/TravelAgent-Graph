@@ -293,10 +293,12 @@ export async function generateTripPlanStream(
         for (const line of lines) {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
+            console.log(`[SSE] Received event: ${currentEvent}`);
           } else if (line.startsWith("data: ")) {
             const jsonStr = line.slice(6);
             try {
               const data = JSON.parse(jsonStr);
+              console.log(`[SSE] Processing event: ${currentEvent}`, data);
               switch (currentEvent) {
                 case "start":
                   handlers.onStart?.(data as SSEStartEvent);
@@ -328,7 +330,9 @@ export async function generateTripPlanStream(
                   handlers.onSummarize?.(data as SSESummarizeEvent);
                   break;
                 case "review":
+                  console.log(`[SSE] Calling onReview handler with data:`, data);
                   handlers.onReview?.(data as SSEReviewEvent);
+                  console.log(`[SSE] onReview handler completed`);
                   break;
                 case "done":
                   handlers.onDone?.(data as SSEDoneEvent);
@@ -337,8 +341,8 @@ export async function generateTripPlanStream(
                   handlers.onError?.(data as SSEErrorEvent);
                   break;
               }
-            } catch {
-              // skip invalid JSON
+            } catch (error) {
+              console.error(`[SSE] Error parsing JSON for event ${currentEvent}:`, error, jsonStr);
             }
             currentEvent = "";
           }

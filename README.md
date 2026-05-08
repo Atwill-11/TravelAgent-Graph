@@ -519,12 +519,3 @@ curl http://localhost:3001/health
 | **状态持久化**   | AsyncPostgresSaver                   | 支持跨会话恢复                  |
 | **结构化日志**   | structlog + ContextVar               | 请求级日志上下文                |
 | **SSE 流式响应** | StreamingResponse + fetch API        | 实时展示 Agent 思考过程         |
-
----
-
-## 📝 技术博客与文档
-
-- [LangChain 官方文档](https://python.langchain.com/)
-- [LangGraph 官方文档](https://langchain-ai.github.io/langgraph/)
-- [MCP 协议介绍](https://modelcontextprotocol.io/)
-- [Langfuse 可观测性](https://langfuse.com/)

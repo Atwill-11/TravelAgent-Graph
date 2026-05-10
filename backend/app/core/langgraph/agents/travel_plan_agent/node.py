@@ -73,6 +73,47 @@ NODE_DISPLAY_ICONS = {
     "user_review": "👀",
 }
 
+VALID_TASK_TYPES = {"weather", "attraction", "hotel", "rag", "selection"}
+
+TASK_KEYWORD_MAP = {
+    "weather": ["天气", "气温", "温度", "降雨", "天气情况"],
+    "attraction": ["景点", "搜索", "查找景点", "博物馆", "公园", "自然风光"],
+    "hotel": ["酒店", "住宿", "宾馆", "民宿"],
+    "rag": ["知识库", "攻略", "推荐", "美食", "文化", "介绍", "旅行贴士", "注意事项"],
+    "selection": ["分配", "选择", "安排行程", "挑选"],
+}
+
+
+def _infer_task_type(task_description: str) -> str:
+    """根据任务描述推断子智能体类型。"""
+    for task_type, keywords in TASK_KEYWORD_MAP.items():
+        for kw in keywords:
+            if kw in task_description:
+                return task_type
+    return "rag"
+
+
+def _align_task_types(tasks: list[str], task_types: list[str]) -> list[str]:
+    """对齐task_types与tasks的长度，补全缺失或无效的类型。
+
+    LLM偶尔会漏掉task_types字段或生成不完整/无效的类型，
+    此函数确保每个task都有对应的合法task_type。
+    """
+    result = []
+    for i, task in enumerate(tasks):
+        if i < len(task_types) and task_types[i] in VALID_TASK_TYPES:
+            result.append(task_types[i])
+        else:
+            inferred = _infer_task_type(task)
+            logger.warning(
+                "task_types缺失或无效，自动推断",
+                task=task[:50],
+                original_type=task_types[i] if i < len(task_types) else None,
+                inferred_type=inferred,
+            )
+            result.append(inferred)
+    return result
+
 SUB_AGENT_DISPLAY_NAMES = {
     "weather": "天气查询",
     "attraction": "景点搜索",
@@ -109,6 +150,7 @@ def plan_node(state: TravelPlannerState) -> dict:
     """
     model = get_plan_model()
     
+    # 检查是否为修改模式
     is_modification = state.notes.get("user_decision") == "modify" and bool(state.user_feedback)
     
     if is_modification:
@@ -158,9 +200,10 @@ def plan_node(state: TravelPlannerState) -> dict:
             "user_feedback": user_feedback,
         })
         
+        aligned_types = _align_task_types(result.plan.tasks, result.plan.task_types)
         task_items = [
             TaskItem(task=task, type=task_type, status="pending", result=None)
-            for task, task_type in zip(result.plan.tasks, result.plan.task_types)
+            for task, task_type in zip(result.plan.tasks, aligned_types)
         ]
         
         update = {
@@ -197,9 +240,10 @@ def plan_node(state: TravelPlannerState) -> dict:
         chain = plan_prompt | model.with_structured_output(PlanResult)
         result = chain.invoke({"user_request": user_message})
         
+        aligned_types = _align_task_types(result.plan.tasks, result.plan.task_types)
         task_items = [
             TaskItem(task=task, type=task_type, status="pending", result=None)
-            for task, task_type in zip(result.plan.tasks, result.plan.task_types)
+            for task, task_type in zip(result.plan.tasks, aligned_types)
         ]
         
         return {
@@ -207,7 +251,7 @@ def plan_node(state: TravelPlannerState) -> dict:
             "messages": [AIMessage(content=f"已规划 {len(result.plan.tasks)} 个任务：\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(result.plan.tasks)))],
         }
 
-
+# 区分独立任务和依赖任务
 INDEPENDENT_TASK_TYPES = {"weather", "attraction", "hotel", "rag"}
 DEPENDENT_TASK_TYPES = {"selection"}
 
@@ -340,6 +384,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     plan = list(state.plan)
     sub_agent_results = list(state.sub_agent_results)
     
+    # 收集所有的待执行任务
     pending_tasks = []
     for idx, task_item in enumerate(plan):
         if task_item.status == "pending":
@@ -348,6 +393,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
     if not pending_tasks:
         return {"current_task": None}
     
+    # 分类独立任务和依赖任务
     independent_tasks = []
     dependent_tasks = []
     
@@ -368,6 +414,7 @@ async def execute_sub_agent_node(state: TravelPlannerState) -> dict:
         "hotel_pool": list(state.hotel_pool),
     }
     
+    # 完成的任务名称列表
     completed_task_names = []
     
     if independent_tasks:

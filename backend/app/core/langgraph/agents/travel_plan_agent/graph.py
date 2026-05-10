@@ -88,12 +88,6 @@ async def _get_compiled_graph():
     
     return _compiled_graph
 
-
-def _invalidate_compiled_graph():
-    """使编译图缓存失效（在资源清理时调用）。"""
-    global _compiled_graph
-    _compiled_graph = None
-
 def build_travel_planner_graph(checkpointer=None):
     """构建旅游规划工作流图。
     

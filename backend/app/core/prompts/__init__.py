@@ -2,6 +2,11 @@
 
 from .attraction import ATTRACTION_AGENT_PROMPT
 from .hotel import HOTEL_AGENT_PROMPT
+from .rag import (
+    RAG_AGENT_PROMPT, 
+    MQE_GENERATION_PROMPT, 
+    HYDE_GENERATION_PROMPT
+)
 from .weather import WEATHER_AGENT_PROMPT
 from .travel import (
     PLAN_MODEL_PROMPT,
@@ -12,6 +17,9 @@ from .travel import (
 __all__ = [
     "ATTRACTION_AGENT_PROMPT",
     "HOTEL_AGENT_PROMPT",
+    "RAG_AGENT_PROMPT",
+    "MQE_GENERATION_PROMPT",
+    "HYDE_GENERATION_PROMPT",
     "WEATHER_AGENT_PROMPT",
     "PLAN_MODEL_PROMPT",
     "SUMMARY_PROMPT",

@@ -173,5 +173,180 @@
     "relevant_cities": ["lijiang"],
     "relevant_sections": ["旅行贴士", "必游景点"],
     "relevant_keywords": ["高原反应", "氧气", "海拔", "剧烈运动"]
+  },
+  {
+    "query_id": "q26",
+    "query": "广州早茶推荐",
+    "relevant_cities": ["guangzhou"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["早茶", "饮茶", "虾饺", "烧卖", "叉烧包", "肠粉"]
+  },
+  {
+    "query_id": "q27",
+    "query": "厦门鼓浪屿怎么去",
+    "relevant_cities": ["xiamen"],
+    "relevant_sections": ["必游景点", "交通指南"],
+    "relevant_keywords": ["鼓浪屿", "轮渡", "码头", "船票"]
+  },
+  {
+    "query_id": "q28",
+    "query": "大理洱海骑行攻略",
+    "relevant_cities": ["dali"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["洱海", "骑行", "环洱海", "双廊"]
+  },
+  {
+    "query_id": "q29",
+    "query": "三亚哪个海滩最好",
+    "relevant_cities": ["sanya"],
+    "relevant_sections": ["必游景点", "住宿建议"],
+    "relevant_keywords": ["亚龙湾", "海棠湾", "三亚湾", "大东海", "海滩"]
+  },
+  {
+    "query_id": "q30",
+    "query": "广州塔值得去吗",
+    "relevant_cities": ["guangzhou"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["广州塔", "小蛮腰", "摩天轮", "灯光秀"]
+  },
+  {
+    "query_id": "q31",
+    "query": "厦门大学参观攻略",
+    "relevant_cities": ["xiamen"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["厦门大学", "芙蓉湖", "预约", "最美大学"]
+  },
+  {
+    "query_id": "q32",
+    "query": "大理白族文化体验",
+    "relevant_cities": ["dali"],
+    "relevant_sections": ["必游景点", "美食推荐"],
+    "relevant_keywords": ["白族", "三道茶", "喜洲", "乳扇", "白族民居"]
+  },
+  {
+    "query_id": "q33",
+    "query": "三亚潜水去哪里",
+    "relevant_cities": ["sanya"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["潜水", "蜈支洲岛", "亚龙湾", "能见度"]
+  },
+  {
+    "query_id": "q34",
+    "query": "广州沙面岛有什么好玩的",
+    "relevant_cities": ["guangzhou"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["沙面", "欧式建筑", "租界", "拍照"]
+  },
+  {
+    "query_id": "q35",
+    "query": "厦门海鲜去哪吃",
+    "relevant_cities": ["xiamen"],
+    "relevant_sections": ["美食推荐", "旅行贴士"],
+    "relevant_keywords": ["海鲜", "八市", "海蛎煎", "沙茶面"]
+  },
+  {
+    "query_id": "q36",
+    "query": "大理苍山怎么玩",
+    "relevant_cities": ["dali"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["苍山", "索道", "徒步", "清碧溪"]
+  },
+  {
+    "query_id": "q37",
+    "query": "三亚免税店购物攻略",
+    "relevant_cities": ["sanya"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["免税", "免税城", "免税店", "额度"]
+  },
+  {
+    "query_id": "q38",
+    "query": "广州煲仔饭推荐",
+    "relevant_cities": ["guangzhou"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["煲仔饭", "饭焦", "腊味", "砂锅"]
+  },
+  {
+    "query_id": "q39",
+    "query": "厦门曾厝垵有什么特色",
+    "relevant_cities": ["xiamen"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["曾厝垵", "文艺", "渔村", "民宿", "小吃"]
+  },
+  {
+    "query_id": "q40",
+    "query": "避寒去哪个城市好",
+    "relevant_cities": [],
+    "relevant_sections": ["最佳旅游时间"],
+    "relevant_keywords": ["冬季", "温暖", "避寒", "三亚", "厦门"]
+  },
+  {
+    "query_id": "q41",
+    "query": "海边度假推荐",
+    "relevant_cities": [],
+    "relevant_sections": ["必游景点", "住宿建议"],
+    "relevant_keywords": ["海滩", "海滨", "海景", "度假"]
+  },
+  {
+    "query_id": "q42",
+    "query": "哪些城市适合骑行",
+    "relevant_cities": [],
+    "relevant_sections": ["必游景点", "交通指南"],
+    "relevant_keywords": ["骑行", "自行车", "环岛", "环湖"]
+  },
+  {
+    "query_id": "q43",
+    "query": "传统小吃推荐",
+    "relevant_cities": [],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["小吃", "传统", "特色", "老字号"]
+  },
+  {
+    "query_id": "q44",
+    "query": "北京冬天去合适吗",
+    "relevant_cities": ["beijing"],
+    "relevant_sections": ["最佳旅游时间"],
+    "relevant_keywords": ["冬季", "寒冷", "故宫雪景", "庙会"]
+  },
+  {
+    "query_id": "q45",
+    "query": "杭州灵隐寺怎么去",
+    "relevant_cities": ["hangzhou"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["灵隐寺", "飞来峰", "古刹"]
+  },
+  {
+    "query_id": "q46",
+    "query": "广州老火靓汤哪里喝",
+    "relevant_cities": ["guangzhou"],
+    "relevant_sections": ["美食推荐"],
+    "relevant_keywords": ["老火靓汤", "汤", "煲汤", "靓汤"]
+  },
+  {
+    "query_id": "q47",
+    "query": "三亚台风季节注意事项",
+    "relevant_cities": ["sanya"],
+    "relevant_sections": ["旅行贴士", "最佳旅游时间"],
+    "relevant_keywords": ["台风", "雨季", "海上项目", "天气预报"]
+  },
+  {
+    "query_id": "q48",
+    "query": "大理和丽江哪个更值得去",
+    "relevant_cities": ["dali", "lijiang"],
+    "relevant_sections": ["城市概述"],
+    "relevant_keywords": ["大理", "丽江", "古城", "洱海", "苍山"]
+  },
+  {
+    "query_id": "q49",
+    "query": "亲子游推荐目的地",
+    "relevant_cities": [],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["迪士尼", "大熊猫", "海滩", "亲子"]
+  },
+  {
+    "query_id": "q50",
+    "query": "厦门环岛路骑行体验",
+    "relevant_cities": ["xiamen"],
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["环岛路", "骑行", "海滨", "白城沙滩"]
   }
 ]

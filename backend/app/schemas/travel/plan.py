@@ -8,7 +8,7 @@ from .components import DayPlan, Budget
 class TaskPlan(BaseModel):
     """任务规划结构"""
     tasks: list[str] = Field(description="任务列表，按执行顺序排列")
-    task_types: list[str] = Field(description="每个任务对应的子智能体类型: weather/attraction/hotel")
+    task_types: list[str] = Field(default_factory=list, description="每个任务对应的子智能体类型: weather/attraction/hotel/rag/selection")
 
 class PlanResult(BaseModel):
     """规划结果"""

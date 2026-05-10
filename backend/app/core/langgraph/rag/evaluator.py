@@ -14,6 +14,16 @@
    - 计算公式：MRR = (1/|Q|) * Σ(1/rank_i)，rank_i为第i个查询的首个相关文档排名
    - 衡量检索系统将相关文档排在靠前位置的能力
 
+4. NDCG@K（Normalized Discounted Cumulative Gain）：考虑排序位置的增益指标
+   - 计算公式：NDCG@K = DCG@K / IDCG@K
+   - DCG@K = Σ(rel_i / log2(i+1))，i从1到K
+   - 衡量检索系统将相关文档排在靠前位置的能力（比MRR更精细）
+
+评估模式：
+  A. 单模式评估（evaluate）：评估单一检索策略的质量
+  B. 对比评估（compare）：对比基础检索 vs 扩展检索的质量差异，
+     验证MQE+HyDE是否真的提升了召回率
+
 评估流程：
   评估数据集(eval_dataset.json) → 逐条查询RAG流水线 → 判定相关性 → 计算指标 → 汇总报告
 
@@ -24,6 +34,7 @@
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -154,6 +165,45 @@ class EvalResult:
             if is_rel:
                 return 1.0 / (i + 1)
         return 0.0
+
+    def ndcg_at_k(self, k: int) -> float:
+        """计算NDCG@K（Normalized Discounted Cumulative Gain）。
+
+        NDCG@K = DCG@K / IDCG@K
+
+        其中：
+        - DCG@K = Σ(rel_i / log2(i+1))，i从1到K
+        - IDCG@K是理想排序下的DCG@K（所有相关文档排在最前面）
+        - rel_i = 1（相关）或 0（不相关）
+
+        NDCG考虑了文档在排序列表中的位置，排在前面的相关文档贡献更大。
+        值域[0, 1]，1表示完美排序。
+
+        Args:
+            k: 截断位置
+
+        Returns:
+            NDCG@K值
+        """
+        dcg = 0.0
+        for i in range(min(k, len(self.relevance_flags))):
+            if self.relevance_flags[i]:
+                dcg += 1.0 / (i + 1 if i == 0 else self._log2(i + 1))
+
+        ideal_relevant_count = min(
+            self.total_relevant,
+            min(k, len(self.relevance_flags)),
+        )
+        idcg = 0.0
+        for i in range(ideal_relevant_count):
+            idcg += 1.0 / (i + 1 if i == 0 else self._log2(i + 1))
+
+        return dcg / idcg if idcg > 0 else 0.0
+
+    @staticmethod
+    def _log2(x: float) -> float:
+        import math
+        return math.log2(x)
 
 
 class RAGEvaluator:
@@ -332,8 +382,10 @@ class RAGEvaluator:
         for k in k_values:
             recalls = [r.recall_at_k(k) for r in results]
             precisions = [r.precision_at_k(k) for r in results]
+            ndcgs = [r.ndcg_at_k(k) for r in results]
             summary[f"recall@{k}"] = round(sum(recalls) / n, 4)
             summary[f"precision@{k}"] = round(sum(precisions) / n, 4)
+            summary[f"ndcg@{k}"] = round(sum(ndcgs) / n, 4)
 
         mrr_values = [r.reciprocal_rank() for r in results]
         summary["mrr"] = round(sum(mrr_values) / n, 4)
@@ -351,6 +403,7 @@ class RAGEvaluator:
             for k in k_values:
                 item[f"recall@{k}"] = round(r.recall_at_k(k), 4)
                 item[f"precision@{k}"] = round(r.precision_at_k(k), 4)
+                item[f"ndcg@{k}"] = round(r.ndcg_at_k(k), 4)
             per_query.append(item)
 
         return {
@@ -358,4 +411,282 @@ class RAGEvaluator:
             "query_count": n,
             "k_values": k_values,
             "per_query": per_query,
+        }
+
+    async def compare(
+        self,
+        k_values: Optional[List[int]] = None,
+        multi_query_count: int = 3,
+        use_hyde: bool = True,
+    ) -> Dict[str, Any]:
+        """对比评估：基础检索 vs 扩展检索。
+
+        对同一评估数据集分别执行基础检索和扩展检索，
+        生成对比报告，验证MQE+HyDE是否真的提升了召回率。
+
+        对比维度：
+        1. 召回率提升：扩展检索是否找到了更多相关文档
+        2. 精确率变化：扩展检索是否引入了更多噪声
+        3. 排序质量：扩展检索是否将相关文档排在更靠前的位置
+        4. 逐查询分析：哪些查询受益最大，哪些查询反而变差
+
+        Args:
+            k_values: 需要评估的K值列表，默认[1, 3, 5, 10]
+            multi_query_count: MQE生成的扩展查询数量，默认3
+            use_hyde: 是否启用HyDE，默认True
+
+        Returns:
+            对比评估报告，包含：
+            - basic: 基础检索评估结果
+            - expanded: 扩展检索评估结果
+            - comparison: 对比分析（指标差异、提升/下降查询统计等）
+        """
+        if k_values is None:
+            k_values = [1, 3, 5, 10]
+
+        max_k = max(k_values)
+
+        queries = self.load_eval_dataset()
+        all_chunks = self._load_all_chunks()
+
+        basic_results: List[EvalResult] = []
+        expanded_results: List[EvalResult] = []
+
+        basic_total_time = 0.0
+        expanded_total_time = 0.0
+
+        for q in queries:
+            basic_docs = await self._retrieve_basic(q.query, max_k)
+            basic_results.append(
+                self._build_eval_result(q, basic_docs, all_chunks, k_values)
+            )
+
+            expanded_docs = await self._retrieve_expanded(
+                q.query, max_k, multi_query_count, use_hyde
+            )
+            expanded_results.append(
+                self._build_eval_result(q, expanded_docs, all_chunks, k_values)
+            )
+
+            logger.info(
+                "对比评估完成",
+                query_id=q.query_id,
+                basic_relevant=sum(
+                    q.is_relevant(doc) for doc in basic_docs
+                ),
+                expanded_relevant=sum(
+                    q.is_relevant(doc) for doc in expanded_docs
+                ),
+            )
+
+        basic_report = self._aggregate(basic_results, k_values)
+        expanded_report = self._aggregate(expanded_results, k_values)
+
+        comparison = self._build_comparison(
+            basic_results, expanded_results, k_values
+        )
+
+        return {
+            "basic": basic_report,
+            "expanded": expanded_report,
+            "comparison": comparison,
+        }
+
+    async def _retrieve_basic(
+        self, query: str, k: int
+    ) -> List[Document]:
+        """执行基础检索。
+
+        Args:
+            query: 查询文本
+            k: 返回文档数量
+
+        Returns:
+            检索到的文档列表
+        """
+        start_time = time.monotonic()
+        try:
+            results = await self.pipeline.aretrieve_with_scores(
+                query=query, k=k
+            )
+            retrieved_docs = [doc for doc, _score in results]
+        except Exception as e:
+            logger.error("基础检索失败", query=query[:50], error=str(e))
+            retrieved_docs = []
+        elapsed = time.monotonic() - start_time
+        logger.debug("基础检索耗时", query=query[:50], elapsed_ms=round(elapsed * 1000, 1))
+        return retrieved_docs
+
+    async def _retrieve_expanded(
+        self,
+        query: str,
+        k: int,
+        multi_query_count: int,
+        use_hyde: bool,
+    ) -> List[Document]:
+        """执行扩展检索。
+
+        Args:
+            query: 查询文本
+            k: 返回文档数量
+            multi_query_count: MQE扩展查询数量
+            use_hyde: 是否启用HyDE
+
+        Returns:
+            检索到的文档列表
+        """
+        start_time = time.monotonic()
+        try:
+            retrieved_docs = await self.pipeline.aexpanded_retrieve(
+                query=query,
+                k=k,
+                multi_query_count=multi_query_count,
+                use_hyde=use_hyde,
+            )
+        except Exception as e:
+            logger.error("扩展检索失败", query=query[:50], error=str(e))
+            retrieved_docs = []
+        elapsed = time.monotonic() - start_time
+        logger.debug("扩展检索耗时", query=query[:50], elapsed_ms=round(elapsed * 1000, 1))
+        return retrieved_docs
+
+    def _build_eval_result(
+        self,
+        query: EvalQuery,
+        retrieved_docs: List[Document],
+        all_chunks: List[Document],
+        k_values: List[int],
+    ) -> EvalResult:
+        """构建单条查询的评估结果。
+
+        Args:
+            query: 评估查询
+            retrieved_docs: 检索到的文档列表
+            all_chunks: 全库文档分块
+            k_values: K值列表
+
+        Returns:
+            EvalResult实例
+        """
+        relevance_flags = [query.is_relevant(doc) for doc in retrieved_docs]
+        total_relevant = self._count_relevant(query, all_chunks)
+
+        return EvalResult(
+            query_id=query.query_id,
+            query=query.query,
+            k_values=k_values,
+            relevance_flags=relevance_flags,
+            total_relevant=total_relevant,
+        )
+
+    def _build_comparison(
+        self,
+        basic_results: List[EvalResult],
+        expanded_results: List[EvalResult],
+        k_values: List[int],
+    ) -> Dict[str, Any]:
+        """构建基础检索 vs 扩展检索的对比分析。
+
+        分析维度：
+        1. 指标差异：各指标在两种检索策略下的差值
+        2. 提升查询统计：有多少查询的召回率提升了
+        3. 下降查询统计：有多少查询的召回率反而下降了
+        4. 逐查询对比：每条查询在两种策略下的详细指标对比
+
+        Args:
+            basic_results: 基础检索的评估结果列表
+            expanded_results: 扩展检索的评估结果列表
+            k_values: K值列表
+
+        Returns:
+            对比分析报告
+        """
+        n = len(basic_results)
+        if n == 0 or n != len(expanded_results):
+            return {"error": "评估结果数量不匹配或为空"}
+
+        metric_deltas: Dict[str, float] = {}
+        for k in k_values:
+            basic_recall_avg = sum(r.recall_at_k(k) for r in basic_results) / n
+            expanded_recall_avg = sum(r.recall_at_k(k) for r in expanded_results) / n
+            metric_deltas[f"recall@{k}_delta"] = round(
+                expanded_recall_avg - basic_recall_avg, 4
+            )
+
+            basic_precision_avg = sum(r.precision_at_k(k) for r in basic_results) / n
+            expanded_precision_avg = sum(r.precision_at_k(k) for r in expanded_results) / n
+            metric_deltas[f"precision@{k}_delta"] = round(
+                expanded_precision_avg - basic_precision_avg, 4
+            )
+
+            basic_ndcg_avg = sum(r.ndcg_at_k(k) for r in basic_results) / n
+            expanded_ndcg_avg = sum(r.ndcg_at_k(k) for r in expanded_results) / n
+            metric_deltas[f"ndcg@{k}_delta"] = round(
+                expanded_ndcg_avg - basic_ndcg_avg, 4
+            )
+
+        basic_mrr_avg = sum(r.reciprocal_rank() for r in basic_results) / n
+        expanded_mrr_avg = sum(r.reciprocal_rank() for r in expanded_results) / n
+        metric_deltas["mrr_delta"] = round(expanded_mrr_avg - basic_mrr_avg, 4)
+
+        recall_improved = 0
+        recall_declined = 0
+        recall_unchanged = 0
+        max_k = max(k_values)
+
+        for basic_r, expanded_r in zip(basic_results, expanded_results):
+            basic_recall = basic_r.recall_at_k(max_k)
+            expanded_recall = expanded_r.recall_at_k(max_k)
+            if expanded_recall > basic_recall:
+                recall_improved += 1
+            elif expanded_recall < basic_recall:
+                recall_declined += 1
+            else:
+                recall_unchanged += 1
+
+        per_query_comparison = []
+        for basic_r, expanded_r in zip(basic_results, expanded_results):
+            item: Dict[str, Any] = {
+                "query_id": basic_r.query_id,
+                "query": basic_r.query,
+                "basic": {
+                    "total_relevant": basic_r.total_relevant,
+                    "relevant_in_retrieved": sum(basic_r.relevance_flags),
+                    "mrr": round(basic_r.reciprocal_rank(), 4),
+                },
+                "expanded": {
+                    "total_relevant": expanded_r.total_relevant,
+                    "relevant_in_retrieved": sum(expanded_r.relevance_flags),
+                    "mrr": round(expanded_r.reciprocal_rank(), 4),
+                },
+            }
+            for k in k_values:
+                item["basic"][f"recall@{k}"] = round(basic_r.recall_at_k(k), 4)
+                item["basic"][f"precision@{k}"] = round(basic_r.precision_at_k(k), 4)
+                item["basic"][f"ndcg@{k}"] = round(basic_r.ndcg_at_k(k), 4)
+                item["expanded"][f"recall@{k}"] = round(expanded_r.recall_at_k(k), 4)
+                item["expanded"][f"precision@{k}"] = round(expanded_r.precision_at_k(k), 4)
+                item["expanded"][f"ndcg@{k}"] = round(expanded_r.ndcg_at_k(k), 4)
+
+            basic_max_recall = basic_r.recall_at_k(max_k)
+            expanded_max_recall = expanded_r.recall_at_k(max_k)
+            if expanded_max_recall > basic_max_recall:
+                item["verdict"] = "improved"
+            elif expanded_max_recall < basic_max_recall:
+                item["verdict"] = "declined"
+            else:
+                item["verdict"] = "unchanged"
+
+            per_query_comparison.append(item)
+
+        return {
+            "metric_deltas": metric_deltas,
+            "recall_change_summary": {
+                "improved": recall_improved,
+                "declined": recall_declined,
+                "unchanged": recall_unchanged,
+                "total": n,
+                "improved_ratio": round(recall_improved / n, 4) if n > 0 else 0.0,
+            },
+            "per_query": per_query_comparison,
         }

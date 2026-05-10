@@ -54,6 +54,7 @@ RAG Pipeline 各环节说明：
                                            └──────────────┘
 """
 
+import asyncio
 import uuid
 import hashlib
 from pathlib import Path
@@ -71,6 +72,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.rag_document import RAGDocument
+from app.core.prompts import MQE_GENERATION_PROMPT, HYDE_GENERATION_PROMPT
 
 KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
 
@@ -184,7 +186,7 @@ class RAGPipeline:
         ]
         return MarkdownHeaderTextSplitter(
             headers_to_split_on=headers_to_split_on,
-            strip_headers=False,
+            strip_headers=True,
             return_each_line=False,
         )
 
@@ -542,6 +544,7 @@ class RAGPipeline:
 
                     file_chunks = [c for c in chunks if c.metadata.get("city") == filename]
 
+                    # 检查数据库中是否已存在该文件的记录，存在则更新，不存在则创建
                     existing_doc = session.exec(
                         select(RAGDocument).where(RAGDocument.filename == filename)
                     ).first()
@@ -657,6 +660,195 @@ class RAGPipeline:
         except Exception as e:
             logger.error("带分数检索失败", query=query[:50], error=str(e))
             return []
+
+    async def aexpanded_retrieve(
+        self,
+        query: str,
+        k: int = 4,
+        multi_query_count: int = 3,
+        use_hyde: bool = True,
+    ) -> List[Document]:
+        """扩展检索：整合多查询扩展(MQE)与假设文档嵌入(HyDE)。
+
+        核心机制是"扩展-检索-合并"三步流程：
+        1. 扩展：根据原始查询生成多个扩展查询
+           - MQE：生成语义等价的多样化查询
+           - HyDE：让LLM生成假设性答案段落
+        2. 检索：对每个扩展查询并行执行向量检索
+        3. 合并：去重和分数排序，返回最相关的top-k文档
+
+        Args:
+            query: 用户查询文本
+            k: 最终返回的文档数量
+            multi_query_count: MQE生成的扩展查询数量
+            use_hyde: 是否启用HyDE假设文档嵌入
+
+        Returns:
+            去重合并后的文档列表
+        """
+        if not self.is_initialized:
+            await self.initialize()
+
+        if self._vector_store is None:
+            logger.error("向量存储不可用")
+            return []
+
+        try:
+            expanded_queries = await self._generate_expanded_queries(
+                query, multi_query_count, use_hyde
+            )
+
+            all_queries = [query] + expanded_queries
+
+            retrieval_tasks = [
+                self.aretrieve(q, k=k)
+                for q in all_queries
+            ]
+            all_results = await asyncio.gather(*retrieval_tasks)
+
+            merged_docs = self._merge_and_deduplicate(all_results, k=k)
+
+            logger.info(
+                "扩展检索完成",
+                query=query[:50],
+                total_queries=len(all_queries),
+                total_candidates=sum(len(r) for r in all_results),
+                merged_count=len(merged_docs),
+            )
+            return merged_docs
+
+        except Exception as e:
+            logger.error("扩展检索失败", query=query[:50], error=str(e))
+            return await self.aretrieve(query, k=k)
+
+    async def _generate_expanded_queries(
+        self,
+        query: str,
+        multi_query_count: int = 3,
+        use_hyde: bool = True,
+    ) -> List[str]:
+        """生成扩展查询：MQE多查询扩展 + HyDE假设文档。
+
+        MQE和HyDE两个chain调用之间无依赖关系，使用asyncio.gather并行执行，
+        将串行的2次LLM调用耗时压缩为1次。
+
+        Args:
+            query: 原始查询
+            multi_query_count: MQE扩展查询数量
+            use_hyde: 是否启用HyDE
+
+        Returns:
+            扩展查询列表
+        """
+        expanded = []
+
+        try:
+            model = ChatQwen(
+                model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
+                api_key=settings.DASHSCOPE_API_KEY,
+                api_base=settings.DASHSCOPE_API_BASE,
+                temperature=0.7,
+                max_tokens=500,
+                timeout=30,
+                max_retries=1,
+            )
+
+            mqe_coro = None
+            hyde_coro = None
+
+            if multi_query_count > 0:
+                mqe_prompt = ChatPromptTemplate.from_messages([
+                    ("system", MQE_GENERATION_PROMPT),
+                    ("human", "原始查询：{query}\n\n请生成{count}个不同表述的查询。"),
+                ])
+                mqe_chain = mqe_prompt | model
+                mqe_coro = mqe_chain.ainvoke({"query": query, "count": multi_query_count})
+
+            if use_hyde:
+                hyde_prompt = ChatPromptTemplate.from_messages([
+                    ("system", HYDE_GENERATION_PROMPT),
+                    ("human", "用户问题：{query}\n\n请写一段详细的回答。"),
+                ])
+                hyde_chain = hyde_prompt | model
+                hyde_coro = hyde_chain.ainvoke({"query": query})
+
+            coroutines = [c for c in [mqe_coro, hyde_coro] if c is not None]
+            results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+            result_idx = 0
+            if mqe_coro is not None:
+                mqe_result = results[result_idx]
+                result_idx += 1
+                if isinstance(mqe_result, Exception):
+                    logger.warning("MQE生成失败", error=str(mqe_result))
+                else:
+                    for line in mqe_result.content.strip().split("\n"):
+                        line = line.strip()
+                        line = line.lstrip("0123456789.-) ")
+                        if line:
+                            expanded.append(line)
+
+            if hyde_coro is not None:
+                hyde_result = results[result_idx]
+                if isinstance(hyde_result, Exception):
+                    logger.warning("HyDE生成失败", error=str(hyde_result))
+                else:
+                    hyde_text = hyde_result.content.strip()
+                    if hyde_text:
+                        expanded.append(hyde_text)
+
+            logger.info(
+                "扩展查询生成完成",
+                original_query=query[:50],
+                mqe_count=min(multi_query_count, len(expanded)),
+                hyde_enabled=use_hyde,
+                total_expanded=len(expanded),
+            )
+
+        except Exception as e:
+            logger.warning("扩展查询生成失败，将使用原始查询", error=str(e))
+
+        return expanded
+
+    def _merge_and_deduplicate(
+        self,
+        result_groups: List[List[Document]],
+        k: int = 4,
+    ) -> List[Document]:
+        """合并多组检索结果并去重。
+
+        去重策略：基于page_content的哈希值去重。
+        排序策略：按出现次数（多组结果中出现的次数越多越靠前），
+        相同次数按首次出现顺序。
+
+        Args:
+            result_groups: 多组检索结果
+            k: 最终返回的文档数量
+
+        Returns:
+            去重合并后的文档列表
+        """
+        doc_scores: Dict[str, Tuple[Document, int]] = {}
+        seen_order: Dict[str, int] = {}
+        order = 0
+
+        for group in result_groups:
+            for doc in group:
+                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                if content_hash in doc_scores:
+                    existing_doc, count = doc_scores[content_hash]
+                    doc_scores[content_hash] = (existing_doc, count + 1)
+                else:
+                    doc_scores[content_hash] = (doc, 1)
+                    seen_order[content_hash] = order
+                    order += 1
+
+        sorted_docs = sorted(
+            doc_scores.values(),
+            key=lambda x: (-x[1], seen_order[hashlib.md5(x[0].page_content.encode()).hexdigest()]),
+        )
+
+        return [doc for doc, _ in sorted_docs[:k]]
 
     async def agenerate(self, query: str, k: int = 4) -> Dict[str, Any]:
         """检索增强生成（RAG核心方法）。

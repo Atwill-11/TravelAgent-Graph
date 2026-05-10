@@ -18,12 +18,14 @@
 """
 
 from .pipeline import RAGPipeline, get_rag_pipeline
-from .rag_tool import rag_knowledge_search
+from .rag_tool import rag_knowledge_retrieve, rag_expanded_retrieve, rag_tools
 from .evaluator import RAGEvaluator
 
 __all__ = [
     "RAGPipeline",
     "get_rag_pipeline",
-    "rag_knowledge_search",
+    "rag_knowledge_retrieve",
+    "rag_expanded_retrieve",
+    "rag_tools",
     "RAGEvaluator",
 ]

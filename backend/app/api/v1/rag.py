@@ -377,3 +377,139 @@ async def evaluate_rag_retrieval(
             status_code=500,
             detail=f"RAG检索质量评估失败: {str(e)}"
         )
+
+
+class ABTestRequest(BaseModel):
+    """RAG A/B测试请求模型。"""
+
+    k_values: Optional[List[int]] = Field(
+        None,
+        description="评估的K值列表，默认[1, 3, 5, 10]"
+    )
+    configs: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None,
+        description="""自定义配置字典，格式为 {"配置名": {"参数名": 参数值, ...}}。
+不传递此参数则使用默认5种配置：
+- baseline: 纯向量检索（所有增强策略关闭）
+- mqe_only: 仅启用MQE多查询扩展
+- hyde_only: 仅启用HyDE假设文档嵌入
+- hybrid_only: 仅启用混合检索（向量+关键词）
+- full: 全部策略启用"""
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "k_values": [1, 3, 5, 10]
+                },
+                {
+                    "k_values": [5],
+                    "configs": {
+                        "my_baseline": {
+                            "use_mqe": False,
+                            "use_hyde": False,
+                            "use_filter": False,
+                            "use_hybrid": False,
+                            "use_context_expansion": False,
+                            "use_diversity": False
+                        },
+                        "my_enhanced": {
+                            "use_mqe": True,
+                            "use_hyde": True,
+                            "use_filter": True,
+                            "use_hybrid": True,
+                            "use_context_expansion": True,
+                            "use_diversity": True
+                        }
+                    }
+                }
+            ]
+        }
+    }
+
+
+class ABTestResponse(BaseModel):
+    """RAG A/B测试响应模型。"""
+
+    configs: Dict[str, Dict[str, Any]] = Field(description="各配置的参数详情")
+    k_values: List[int] = Field(description="评估使用的K值列表")
+    results: Dict[str, Dict[str, Any]] = Field(description="各配置的评估结果")
+    timing: Dict[str, float] = Field(description="各配置的总耗时（秒）")
+    comparison: Dict[str, Any] = Field(description="配置间的对比分析")
+
+
+@router.post(
+    "/evaluate/ab_test",
+    response_model=ABTestResponse,
+    summary="RAG检索策略A/B测试",
+    description="""
+对不同的RAG检索策略组合进行A/B测试，对比各策略的效果差异。
+
+**默认测试配置：**
+- **baseline**: 纯向量检索（所有增强策略关闭）
+- **mqe_only**: 仅启用MQE多查询扩展
+- **hyde_only**: 仅启用HyDE假设文档嵌入
+- **hybrid_only**: 仅启用混合检索（向量+关键词）
+- **full**: 全部策略启用
+
+**测试结果可以回答：**
+1. MQE对召回率有多大提升？
+2. HyDE对召回率有多大提升？
+3. 混合检索（关键词+语义）是否优于纯向量检索？
+4. 各策略组合是否有叠加效果？
+
+**参数说明：**
+- `k_values`: 评估的K值列表，默认[1, 3, 5, 10]
+- `configs`: 自定义配置字典，可覆盖默认配置
+
+**返回说明：**
+- `configs`: 各配置的参数详情
+- `results`: 各配置的评估结果（包含summary、query_count、per_query）
+- `comparison`: 配置间的对比分析（指标差异、排名等）
+    """,
+)
+async def evaluate_rag_ab_test(
+    request: Request,
+    body: ABTestRequest,
+) -> ABTestResponse:
+    """RAG检索策略A/B测试。"""
+    try:
+        rm = get_resource_manager()
+        rag_pipeline = rm.rag_pipeline
+
+        if rag_pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="RAG流水线未初始化，请检查应用启动日志"
+            )
+
+        from app.core.langgraph.rag.evaluator import RAGEvaluator
+
+        evaluator = RAGEvaluator(rag_pipeline)
+
+        langfuse_client = getattr(rm, "langfuse", None)
+
+        logger.info("开始RAG A/B测试", k_values=body.k_values, configs=body.configs)
+
+        report = await evaluator.ab_test(
+            k_values=body.k_values,
+            configs=body.configs,
+            langfuse_client=langfuse_client,
+        )
+
+        logger.info(
+            "RAG A/B测试完成",
+            config_count=len(report.get("results", {})),
+        )
+
+        return ABTestResponse(**report)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("RAG A/B测试失败", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"RAG A/B测试失败: {str(e)}"
+        )

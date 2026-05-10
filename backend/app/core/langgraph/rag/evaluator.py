@@ -33,10 +33,11 @@
   2. 内容匹配：文档的Header 2在relevant_sections中，或内容包含relevant_keywords中的关键词
 """
 
+import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -452,9 +453,6 @@ class RAGEvaluator:
         basic_results: List[EvalResult] = []
         expanded_results: List[EvalResult] = []
 
-        basic_total_time = 0.0
-        expanded_total_time = 0.0
-
         for q in queries:
             basic_docs = await self._retrieve_basic(q.query, max_k)
             basic_results.append(
@@ -490,6 +488,397 @@ class RAGEvaluator:
             "basic": basic_report,
             "expanded": expanded_report,
             "comparison": comparison,
+        }
+
+    async def ab_test(
+        self,
+        k_values: Optional[List[int]] = None,
+        configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        langfuse_client: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """多配置A/B测试：对比不同检索策略组合的效果。
+
+        通过控制aretrieve_enhanced的各开关参数，测试不同策略组合
+        对检索质量的影响，证明每个增强策略的独立贡献。
+
+        默认测试5种配置：
+        - baseline: 纯向量检索（所有增强策略关闭）
+        - mqe_only: 仅启用MQE多查询扩展
+        - hyde_only: 仅启用HyDE假设文档嵌入
+        - hybrid_only: 仅启用混合检索（向量+关键词）
+        - full: 全部策略启用
+
+        测试结果可以回答：
+        1. MQE对召回率有多大提升？
+        2. HyDE对召回率有多大提升？
+        3. 混合检索（关键词+语义）是否优于纯向量检索？
+        4. 各策略组合是否有叠加效果？
+
+        Args:
+            k_values: 需要评估的K值列表，默认[1, 3, 5, 10]
+            configs: 自定义配置字典，格式为 {"配置名": {"参数名": 参数值, ...}}
+                     参数名对应aretrieve_enhanced的关键字参数
+            langfuse_client: 可选的Langfuse客户端实例，传入后会在Langfuse中
+                             创建结构化trace追踪A/B测试过程，可观测MQE/HyDE生成结果
+
+        Returns:
+            A/B测试报告，包含：
+            - configs: 各配置的参数详情
+            - results: 各配置的评估结果
+            - comparison: 配置间的对比分析
+        """
+        if k_values is None:
+            k_values = [1, 3, 5, 10]
+
+        if configs is None:
+            configs = {
+                "baseline": {
+                    "use_mqe": False,
+                    "use_hyde": False,
+                    "use_filter": False,
+                    "use_hybrid": False,
+                    "use_context_expansion": False,
+                    "use_diversity": False,
+                },
+                "mqe_only": {
+                    "use_mqe": True,
+                    "use_hyde": False,
+                    "use_filter": False,
+                    "use_hybrid": False,
+                    "use_context_expansion": False,
+                    "use_diversity": False,
+                },
+                "hyde_only": {
+                    "use_mqe": False,
+                    "use_hyde": True,
+                    "use_filter": False,
+                    "use_hybrid": False,
+                    "use_context_expansion": False,
+                    "use_diversity": False,
+                },
+                "hybrid_only": {
+                    "use_mqe": False,
+                    "use_hyde": False,
+                    "use_filter": False,
+                    "use_hybrid": True,
+                    "use_context_expansion": False,
+                    "use_diversity": False,
+                },
+                "full": {
+                    "use_mqe": True,
+                    "use_hyde": True,
+                    "use_filter": True,
+                    "use_hybrid": True,
+                    "use_context_expansion": True,
+                    "use_diversity": True,
+                },
+            }
+
+        max_k = max(k_values)
+        queries = self.load_eval_dataset()
+        all_chunks = self._load_all_chunks()
+
+        trace_id = None
+        if langfuse_client is not None:
+            try:
+                trace_id = langfuse_client.create_trace_id()
+                logger.info("Langfuse A/B测试trace已创建", trace_id=trace_id)
+            except Exception as e:
+                logger.warning("创建Langfuse trace_id失败，继续无trace执行", error=str(e))
+                trace_id = None
+
+        async def _eval_single_query(
+            config_name: str,
+            config_params: Dict[str, Any],
+            q: EvalQuery,
+            config_span: Optional[Any],
+        ) -> Tuple[EvalResult, float, Optional[Any]]:
+            start_time = time.monotonic()
+
+            run_config = None
+            query_span = None
+            if config_span is not None:
+                try:
+                    from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+
+                    query_span = config_span.start_observation(
+                        name=f"query: {q.query_id}",
+                        as_type="span",
+                        input={"query": q.query},
+                    )
+                    run_config = {
+                        "callbacks": [
+                            LangfuseCallbackHandler(
+                                trace_context={
+                                    "trace_id": trace_id,
+                                    "parent_span_id": query_span.id,
+                                },
+                            )
+                        ],
+                        "metadata": {
+                            "config_name": config_name,
+                            "query_id": q.query_id,
+                        },
+                    }
+                except Exception as e:
+                    logger.warning("创建Langfuse query回调失败", error=str(e))
+                    run_config = None
+
+            try:
+                docs = await self.pipeline.aretrieve_enhanced(
+                    query=q.query,
+                    k=max_k,
+                    **config_params,
+                    config=run_config,
+                )
+            except Exception as e:
+                logger.error(
+                    "A/B测试检索失败",
+                    config=config_name,
+                    query_id=q.query_id,
+                    error=str(e),
+                )
+                docs = []
+
+            if query_span is not None:
+                try:
+                    query_span.update(
+                        output={
+                            "retrieved_count": len(docs),
+                        }
+                    )
+                    query_span.end()
+                except Exception:
+                    pass
+
+            elapsed = time.monotonic() - start_time
+
+            eval_result = self._build_eval_result(q, docs, all_chunks, k_values)
+
+            if config_span is not None:
+                try:
+                    eval_span = config_span.start_observation(
+                        name=f"eval: {q.query_id}",
+                        as_type="evaluator",
+                        input={
+                            "query": q.query,
+                            "config_name": config_name,
+                            "retrieved_count": len(docs),
+                        },
+                    )
+
+                    query_metrics = {
+                        "retrieved_count": len(docs),
+                        "relevant_in_retrieved": sum(eval_result.relevance_flags),
+                        "total_relevant": eval_result.total_relevant,
+                        "elapsed_ms": round(elapsed * 1000, 1),
+                        "mrr": round(eval_result.reciprocal_rank(), 4),
+                    }
+                    for kv in k_values:
+                        query_metrics[f"recall@{kv}"] = round(eval_result.recall_at_k(kv), 4)
+                        query_metrics[f"precision@{kv}"] = round(eval_result.precision_at_k(kv), 4)
+                        query_metrics[f"ndcg@{kv}"] = round(eval_result.ndcg_at_k(kv), 4)
+
+                    eval_span.update(output=query_metrics)
+
+                    for kv in k_values:
+                        eval_span.score(
+                            name=f"recall@{kv}",
+                            value=round(eval_result.recall_at_k(kv), 4),
+                        )
+                        eval_span.score(
+                            name=f"precision@{kv}",
+                            value=round(eval_result.precision_at_k(kv), 4),
+                        )
+                        eval_span.score(
+                            name=f"ndcg@{kv}",
+                            value=round(eval_result.ndcg_at_k(kv), 4),
+                        )
+                    eval_span.score(
+                        name="mrr",
+                        value=round(eval_result.reciprocal_rank(), 4),
+                    )
+
+                    eval_span.end()
+                except Exception as e:
+                    logger.warning("Langfuse eval span记录失败", error=str(e))
+
+            return eval_result, elapsed, query_span
+
+        async def _eval_single_config(
+            config_name: str,
+            config_params: Dict[str, Any],
+        ) -> Tuple[str, List[EvalResult], Dict[str, Any], float, Optional[Any]]:
+            config_span = None
+            if trace_id is not None:
+                try:
+                    config_span = langfuse_client.start_observation(
+                        name=f"config: {config_name}",
+                        as_type="span",
+                        trace_context={"trace_id": trace_id},
+                        input=config_params,
+                    )
+                except Exception as e:
+                    logger.warning("创建Langfuse config span失败", error=str(e))
+
+            coros = [
+                _eval_single_query(config_name, config_params, q, config_span)
+                for q in queries
+            ]
+            gather_results = await asyncio.gather(*coros, return_exceptions=True)
+
+            config_results: List[EvalResult] = []
+            config_total_time = 0.0
+            for gr in gather_results:
+                if isinstance(gr, Exception):
+                    logger.error("A/B测试单条查询异常", error=str(gr))
+                    continue
+                eval_result, elapsed, _ = gr
+                config_results.append(eval_result)
+                config_total_time += elapsed
+
+            config_report = self._aggregate(config_results, k_values)
+
+            if config_span is not None:
+                try:
+                    config_span.update(
+                        output={
+                            "summary": config_report["summary"],
+                            "query_count": config_report["query_count"],
+                            "total_time": config_total_time,
+                        }
+                    )
+
+                    for metric_key, metric_value in config_report["summary"].items():
+                        config_span.score(
+                            name=metric_key,
+                            value=metric_value,
+                        )
+
+                    config_span.end()
+                except Exception as e:
+                    logger.warning("Langfuse config span记录失败", error=str(e))
+
+            logger.info(
+                "A/B测试配置完成",
+                config=config_name,
+                avg_recall_at_5=config_report["summary"].get("recall@5", 0),
+                total_time=config_total_time,
+            )
+
+            return config_name, config_results, config_report, config_total_time, config_span
+
+        config_coros = [
+            _eval_single_config(name, params)
+            for name, params in configs.items()
+        ]
+        config_gather_results = await asyncio.gather(*config_coros, return_exceptions=True)
+
+        all_config_results: Dict[str, List[EvalResult]] = {}
+        all_config_reports: Dict[str, Dict[str, Any]] = {}
+        all_config_times: Dict[str, float] = {}
+
+        for gr in config_gather_results:
+            if isinstance(gr, Exception):
+                logger.error("A/B测试配置异常", error=str(gr))
+                continue
+            config_name, config_results, config_report, config_total_time, _ = gr
+            all_config_results[config_name] = config_results
+            all_config_reports[config_name] = config_report
+            all_config_times[config_name] = round(config_total_time, 2)
+
+        comparison = self._build_ab_comparison(
+            all_config_results, all_config_reports, k_values
+        )
+
+        if langfuse_client is not None:
+            try:
+                langfuse_client.flush()
+                logger.info("Langfuse A/B测试数据已刷新")
+            except Exception as e:
+                logger.warning("Langfuse flush失败", error=str(e))
+
+        return {
+            "configs": configs,
+            "k_values": k_values,
+            "results": all_config_reports,
+            "timing": all_config_times,
+            "comparison": comparison,
+        }
+
+    def _build_ab_comparison(
+        self,
+        all_config_results: Dict[str, List[EvalResult]],
+        all_config_reports: Dict[str, Dict[str, Any]],
+        k_values: List[int],
+    ) -> Dict[str, Any]:
+        """构建多配置A/B测试的对比分析。
+
+        以baseline为参照，计算各配置相对于baseline的指标增量，
+        并统计各配置在逐查询层面的胜/负/平情况。
+
+        Args:
+            all_config_results: 各配置的评估结果
+            all_config_reports: 各配置的汇总报告
+            k_values: K值列表
+
+        Returns:
+            多配置对比分析报告
+        """
+        config_names = list(all_config_results.keys())
+        if "baseline" not in config_names:
+            baseline_name = config_names[0]
+        else:
+            baseline_name = "baseline"
+
+        baseline_summary = all_config_reports[baseline_name]["summary"]
+        baseline_results = all_config_results[baseline_name]
+        n = len(baseline_results)
+
+        config_deltas: Dict[str, Dict[str, float]] = {}
+        for name in config_names:
+            if name == baseline_name:
+                continue
+            current_summary = all_config_reports[name]["summary"]
+            deltas = {}
+            for metric_key, baseline_value in baseline_summary.items():
+                current_value = current_summary.get(metric_key, 0.0)
+                deltas[f"{metric_key}_delta"] = round(current_value - baseline_value, 4)
+            config_deltas[name] = deltas
+
+        max_k = max(k_values)
+        per_config_win_stats: Dict[str, Dict[str, int]] = {}
+        for name in config_names:
+            if name == baseline_name:
+                continue
+            current_results = all_config_results[name]
+            improved = declined = unchanged = 0
+            for base_r, cur_r in zip(baseline_results, current_results):
+                base_recall = base_r.recall_at_k(max_k)
+                cur_recall = cur_r.recall_at_k(max_k)
+                if cur_recall > base_recall:
+                    improved += 1
+                elif cur_recall < base_recall:
+                    declined += 1
+                else:
+                    unchanged += 1
+            per_config_win_stats[name] = {
+                "improved": improved,
+                "declined": declined,
+                "unchanged": unchanged,
+                "total": n,
+                "improved_ratio": round(improved / n, 4) if n > 0 else 0.0,
+            }
+
+        summary_table = {}
+        for name in config_names:
+            summary_table[name] = all_config_reports[name]["summary"]
+
+        return {
+            "baseline_config": baseline_name,
+            "metric_deltas_vs_baseline": config_deltas,
+            "win_stats_vs_baseline": per_config_win_stats,
+            "summary_table": summary_table,
         }
 
     async def _retrieve_basic(
@@ -537,11 +926,16 @@ class RAGEvaluator:
         """
         start_time = time.monotonic()
         try:
-            retrieved_docs = await self.pipeline.aexpanded_retrieve(
+            retrieved_docs = await self.pipeline.aretrieve_enhanced(
                 query=query,
                 k=k,
-                multi_query_count=multi_query_count,
+                use_mqe=multi_query_count > 0,
                 use_hyde=use_hyde,
+                mqe_count=multi_query_count,
+                use_filter=False,
+                use_hybrid=False,
+                use_context_expansion=False,
+                use_diversity=False,
             )
         except Exception as e:
             logger.error("扩展检索失败", query=query[:50], error=str(e))

@@ -28,6 +28,7 @@ from typing import Optional
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 from langchain_community.embeddings import DashScopeEmbeddings
+from langchain_community.document_compressors import DashScopeRerank
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer

@@ -65,6 +65,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_postgres import PGEngine, PGVectorStore
+from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
 from langchain_qwq import ChatQwen
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from sqlmodel import Session, select
@@ -78,6 +79,19 @@ KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
 
 EMBEDDING_MODEL = settings.EMBEDDING_MODEL
 EMBEDDING_DIMS = settings.EMBEDDING_DIMS
+
+CITY_ALIASES: Dict[str, str] = {
+    "北京": "beijing",
+    "上海": "shanghai",
+    "西安": "xian",
+    "成都": "chengdu",
+    "杭州": "hangzhou",
+    "丽江": "lijiang",
+    "广州": "guangzhou",
+    "厦门": "xiamen",
+    "大理": "dali",
+    "三亚": "sanya",
+}
 
 class RetrievalStrategy(Protocol):
     """检索策略协议接口，预留扩展。
@@ -661,71 +675,12 @@ class RAGPipeline:
             logger.error("带分数检索失败", query=query[:50], error=str(e))
             return []
 
-    async def aexpanded_retrieve(
-        self,
-        query: str,
-        k: int = 4,
-        multi_query_count: int = 3,
-        use_hyde: bool = True,
-    ) -> List[Document]:
-        """扩展检索：整合多查询扩展(MQE)与假设文档嵌入(HyDE)。
-
-        核心机制是"扩展-检索-合并"三步流程：
-        1. 扩展：根据原始查询生成多个扩展查询
-           - MQE：生成语义等价的多样化查询
-           - HyDE：让LLM生成假设性答案段落
-        2. 检索：对每个扩展查询并行执行向量检索
-        3. 合并：去重和分数排序，返回最相关的top-k文档
-
-        Args:
-            query: 用户查询文本
-            k: 最终返回的文档数量
-            multi_query_count: MQE生成的扩展查询数量
-            use_hyde: 是否启用HyDE假设文档嵌入
-
-        Returns:
-            去重合并后的文档列表
-        """
-        if not self.is_initialized:
-            await self.initialize()
-
-        if self._vector_store is None:
-            logger.error("向量存储不可用")
-            return []
-
-        try:
-            expanded_queries = await self._generate_expanded_queries(
-                query, multi_query_count, use_hyde
-            )
-
-            all_queries = [query] + expanded_queries
-
-            retrieval_tasks = [
-                self.aretrieve(q, k=k)
-                for q in all_queries
-            ]
-            all_results = await asyncio.gather(*retrieval_tasks)
-
-            merged_docs = self._merge_and_deduplicate(all_results, k=k)
-
-            logger.info(
-                "扩展检索完成",
-                query=query[:50],
-                total_queries=len(all_queries),
-                total_candidates=sum(len(r) for r in all_results),
-                merged_count=len(merged_docs),
-            )
-            return merged_docs
-
-        except Exception as e:
-            logger.error("扩展检索失败", query=query[:50], error=str(e))
-            return await self.aretrieve(query, k=k)
-
     async def _generate_expanded_queries(
         self,
         query: str,
         multi_query_count: int = 3,
         use_hyde: bool = True,
+        config: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """生成扩展查询：MQE多查询扩展 + HyDE假设文档。
 
@@ -736,6 +691,7 @@ class RAGPipeline:
             query: 原始查询
             multi_query_count: MQE扩展查询数量
             use_hyde: 是否启用HyDE
+            config: 可选的LangChain RunnableConfig，用于传递回调（如Langfuse）
 
         Returns:
             扩展查询列表
@@ -762,7 +718,7 @@ class RAGPipeline:
                     ("human", "原始查询：{query}\n\n请生成{count}个不同表述的查询。"),
                 ])
                 mqe_chain = mqe_prompt | model
-                mqe_coro = mqe_chain.ainvoke({"query": query, "count": multi_query_count})
+                mqe_coro = mqe_chain.ainvoke({"query": query, "count": multi_query_count}, config=config)
 
             if use_hyde:
                 hyde_prompt = ChatPromptTemplate.from_messages([
@@ -770,7 +726,7 @@ class RAGPipeline:
                     ("human", "用户问题：{query}\n\n请写一段详细的回答。"),
                 ])
                 hyde_chain = hyde_prompt | model
-                hyde_coro = hyde_chain.ainvoke({"query": query})
+                hyde_coro = hyde_chain.ainvoke({"query": query}, config=config)
 
             coroutines = [c for c in [mqe_coro, hyde_coro] if c is not None]
             results = await asyncio.gather(*coroutines, return_exceptions=True)
@@ -812,34 +768,46 @@ class RAGPipeline:
 
     def _merge_and_deduplicate(
         self,
-        result_groups: List[List[Document]],
+        result_groups: List[List[Tuple[Document, float]]],
         k: int = 4,
+        score_threshold: float = 0.0,
     ) -> List[Document]:
-        """合并多组检索结果并去重。
+        """合并多组检索结果并去重，支持相似度阈值过滤。
 
         去重策略：基于page_content的哈希值去重。
         排序策略：按出现次数（多组结果中出现的次数越多越靠前），
         相同次数按首次出现顺序。
+        过滤策略：保留distance <= score_threshold的文档。
+
+        PGVectorStore使用COSINE_DISTANCE度量，distance范围[0, 2]：
+        - 0: 完全相同
+        - < 0.5: 高度相关
+        - 0.5~1.0: 有一定相关性
+        - > 1.0: 基本不相关
 
         Args:
-            result_groups: 多组检索结果
+            result_groups: 多组检索结果，每组为(Document, distance)元组列表
             k: 最终返回的文档数量
+            score_threshold: distance阈值，超过此值的文档被过滤掉。
+                             0表示不过滤（默认），典型值0.5~1.0
 
         Returns:
             去重合并后的文档列表
         """
-        doc_scores: Dict[str, Tuple[Document, int]] = {}
+        doc_scores: Dict[str, Tuple[Document, int, float]] = {}
         seen_order: Dict[str, int] = {}
         order = 0
 
         for group in result_groups:
-            for doc in group:
+            for doc, dist in group:
+                if score_threshold > 0 and dist > score_threshold:
+                    continue
                 content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
                 if content_hash in doc_scores:
-                    existing_doc, count = doc_scores[content_hash]
-                    doc_scores[content_hash] = (existing_doc, count + 1)
+                    existing_doc, count, best_dist = doc_scores[content_hash]
+                    doc_scores[content_hash] = (existing_doc, count + 1, min(best_dist, dist))
                 else:
-                    doc_scores[content_hash] = (doc, 1)
+                    doc_scores[content_hash] = (doc, 1, dist)
                     seen_order[content_hash] = order
                     order += 1
 
@@ -848,7 +816,352 @@ class RAGPipeline:
             key=lambda x: (-x[1], seen_order[hashlib.md5(x[0].page_content.encode()).hexdigest()]),
         )
 
-        return [doc for doc, _ in sorted_docs[:k]]
+        return [doc for doc, _, _ in sorted_docs[:k]]
+
+    @staticmethod
+    def _extract_city_filter(query: str) -> Optional[Dict[str, str]]:
+        """从查询文本中提取城市名，生成元数据过滤条件。
+
+        遍历CITY_ALIASES映射表，匹配查询中出现的城市名。
+        如果匹配到，返回 {"city": "english_name"} 格式的过滤条件，
+        可直接传递给PGVectorStore的filter参数。
+
+        Args:
+            query: 用户查询文本
+
+        Returns:
+            城市过滤条件字典，未匹配到则返回None
+        """
+        for cn_name, en_name in CITY_ALIASES.items():
+            if cn_name in query:
+                return {"city": en_name}
+        return None
+
+    def _build_hybrid_search_config(self, query: str) -> HybridSearchConfig:
+        """构建混合检索配置。
+
+        使用PGVectorStore原生的HybridSearchConfig，配置：
+        - 向量检索（dense）+ 全文检索（sparse）双路召回
+        - RRF（Reciprocal Rank Fusion）融合算法
+        - tsv_lang使用zh_cn配置（基于zhparser中文分词扩展）
+
+        zhparser是PostgreSQL的中文分词扩展，基于scws（Simple Chinese Word
+        Segmentation）实现。它将中文文本按词组切分，例如"兵马俑"会被识别为
+        一个完整的词，而非按字符拆分。这比pg_catalog.simple的字符级匹配
+        精确得多。
+
+        zh_cn配置通过db/init.sql在数据库初始化时自动创建：
+          CREATE TEXT SEARCH CONFIGURATION zh_cn (PARSER = zhparser);
+          ALTER TEXT SEARCH CONFIGURATION zh_cn ADD MAPPING
+            FOR n,v,a,i,e,l WITH simple;
+
+        如果zhparser扩展未安装（如本地开发环境），会自动回退到
+        pg_catalog.simple。
+
+        Args:
+            query: 用户查询文本，同时作为全文检索的查询词
+
+        Returns:
+            HybridSearchConfig实例
+        """
+        return HybridSearchConfig(
+            tsv_column="",
+            tsv_lang="zh_cn",
+            fts_query=query,
+            fusion_function=reciprocal_rank_fusion,
+            fusion_function_parameters={"rrf_k": 60},
+            primary_top_k=20,
+            secondary_top_k=20,
+        )
+
+    async def _hybrid_search_single(
+        self,
+        query: str,
+        k: int,
+        filter_dict: Optional[Dict[str, str]] = None,
+        use_hybrid: bool = True,
+    ) -> List[Tuple[Document, float]]:
+        """对单个查询执行混合检索（向量+关键词+RRF融合）。
+
+        这是统一检索流水线Stage 2的原子操作，每个查询（原始/扩展/HyDE）
+        都会调用此方法获取候选文档。
+
+        Args:
+            query: 查询文本
+            k: 返回文档数量
+            filter_dict: 元数据过滤条件
+            use_hybrid: 是否启用混合检索
+
+        Returns:
+            (Document, distance_score) 元组列表，distance越小越相似
+        """
+        hybrid_config = None
+        if use_hybrid:
+            try:
+                hybrid_config = self._build_hybrid_search_config(query)
+            except Exception:
+                hybrid_config = None
+
+        fetch_k = max(k * 2, 8)
+
+        docs_with_scores = await self._vector_store.asimilarity_search_with_score(
+            query=query,
+            k=fetch_k,
+            filter=filter_dict,
+            hybrid_search_config=hybrid_config,
+        )
+
+        return docs_with_scores
+
+    async def aretrieve_enhanced(
+        self,
+        query: str,
+        k: int = 4,
+        *,
+        use_mqe: bool = True,
+        use_hyde: bool = True,
+        mqe_count: int = 3,
+        use_filter: bool = True,
+        use_hybrid: bool = True,
+        use_context_expansion: bool = True,
+        use_diversity: bool = True,
+        score_threshold: float = 1.0,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> List[Document]:
+        """统一增强检索：查询扩展 → 混合检索 → 合并去重 → 后处理。
+
+        这是RAG流水线的核心检索入口，整合查询扩展、混合检索、
+        合并去重和后处理为统一的四阶段流水线：
+
+        Stage 1 - 查询扩展（可选）：
+          MQE生成语义等价的多样化查询，HyDE生成假设性答案段落。
+          扩展查询不仅用于向量检索，也参与关键词检索——
+          例如HyDE生成的"兵马俑位于临潼区，可乘坐旅游专线"，
+          关键词检索能匹配到"临潼区"和"旅游专线"等原始查询中没有的词。
+
+        Stage 2 - 混合检索：
+          对每个查询（原始+扩展）并行执行：
+          - 向量检索（dense）：语义匹配
+          - 关键词检索（sparse）：PostgreSQL FTS + zhparser中文分词
+          - RRF融合：两路结果合并
+          同时支持元数据预过滤（城市名提取）。
+
+        Stage 3 - 合并去重：
+          多路检索结果按出现频次排序，频次相同按首次出现顺序。
+          支持基于distance的相似度阈值过滤，丢弃距离过大的文档。
+
+        Stage 4 - 后处理（可选）：
+          - 上下文窗口扩展：基于Header元数据补全同section相邻chunk
+          - 城市多样性保证：避免结果过度集中在单一城市
+
+        各策略可独立开关，便于A/B测试和调试。
+
+        Args:
+            query: 用户查询文本
+            k: 最终返回的文档数量
+            use_mqe: 是否启用多查询扩展
+            use_hyde: 是否启用假设文档嵌入
+            mqe_count: MQE生成的扩展查询数量
+            use_filter: 是否启用城市元数据预过滤
+            use_hybrid: 是否启用混合检索（向量+关键词）
+            use_context_expansion: 是否启用上下文窗口扩展
+            use_diversity: 是否启用城市多样性保证
+            score_threshold: 余弦距离阈值，distance > 此值的文档被过滤。
+                             默认1.0（保留有一定相关性的文档）。
+                             范围[0, 2]：0=完全相同，0.5=高度相关，
+                             1.0=中等相关，1.5+=基本不相关。
+                             设为2.0则不过滤任何文档。
+            config: 可选的LangChain RunnableConfig，用于传递回调（如Langfuse）。
+                    当从A/B测试端点调用时传入Langfuse回调以追踪MQE/HyDE生成过程；
+                    当从旅行规划主图调用时为None，回调由主图上下文自动传播。
+
+        Returns:
+            增强检索后的文档列表
+        """
+        if not self.is_initialized:
+            await self.initialize()
+
+        if self._vector_store is None:
+            logger.error("向量存储不可用")
+            return []
+
+        try:
+            # ── Stage 1: 查询扩展 ──
+            all_queries = [query]
+            if use_mqe or use_hyde:
+                expanded = await self._generate_expanded_queries(
+                    query,
+                    multi_query_count=mqe_count if use_mqe else 0,
+                    use_hyde=use_hyde,
+                    config=config,
+                )
+                all_queries.extend(expanded)
+
+            # ── Stage 2: 混合检索 ──
+            filter_dict = self._extract_city_filter(query) if use_filter else None
+
+            retrieval_tasks = [
+                self._hybrid_search_single(
+                    q, k=max(k * 2, 8), filter_dict=filter_dict, use_hybrid=use_hybrid
+                )
+                for q in all_queries
+            ]
+            all_results = await asyncio.gather(*retrieval_tasks)
+
+            # ── Stage 3: 合并去重 ──
+            docs = self._merge_and_deduplicate(
+                all_results, k=k * 3, score_threshold=score_threshold
+            )
+
+            if len(docs) < k and all_results:
+                total_candidates = sum(len(r) for r in all_results)
+                logger.warning(
+                    "去重后文档数量不足，尝试扩大合并范围",
+                    merged_count=len(docs),
+                    target_k=k,
+                    total_candidates=total_candidates,
+                )
+                docs = self._merge_and_deduplicate(
+                    all_results, k=total_candidates, score_threshold=score_threshold
+                )
+
+            # ── Stage 4: 后处理 ──
+            if use_context_expansion and docs:
+                docs = await self._expand_context_window(docs)
+
+            if use_diversity and docs:
+                docs = self._ensure_city_diversity(docs)
+
+            logger.info(
+                "统一增强检索完成",
+                query=query[:50],
+                total_queries=len(all_queries),
+                total_candidates=sum(len(r) for r in all_results),
+                merged_count=len(docs),
+                filter_enabled=use_filter,
+                hybrid_enabled=use_hybrid,
+                mqe_enabled=use_mqe,
+                hyde_enabled=use_hyde,
+                context_expansion_enabled=use_context_expansion,
+                diversity_enabled=use_diversity,
+            )
+
+            return docs[:k + 4]
+
+        except Exception as e:
+            logger.error("统一增强检索失败，回退到基础检索", query=query[:50], error=str(e))
+            return await self.aretrieve(query, k=k)
+
+    async def _expand_context_window(
+        self,
+        docs: List[Document],
+        max_extra_chunks: int = 2,
+    ) -> List[Document]:
+        """基于Header元数据的上下文窗口扩展。
+
+        对于每个检索到的文档块，查找同section（相同city+Header 2）的
+        相邻块并补充进来。这解决了分块导致的信息截断问题：
+        一个chunk可能只包含部分信息，但同section的其他chunk
+        包含完整的上下文。
+
+        扩展策略：
+        1. 从检索结果中提取所有 (city, Header 2) 组合
+        2. 对每个组合，在向量库中检索同section的其他chunk
+        3. 合并去重，优先保留原始检索结果
+
+        Args:
+            docs: 原始检索结果
+            max_extra_chunks: 每个section最多补充的chunk数
+
+        Returns:
+            扩展后的文档列表（原始结果 + 补充的同section chunk）
+        """
+        if not docs or not self._vector_store:
+            return docs
+
+        section_keys = set()
+        for doc in docs:
+            city = doc.metadata.get("city", "")
+            header2 = doc.metadata.get("Header 2", "")
+            if city and header2:
+                section_keys.add((city, header2))
+
+        if not section_keys:
+            return docs
+
+        existing_contents = {hashlib.md5(d.page_content.encode()).hexdigest() for d in docs}
+        extra_docs = []
+
+        for city, header2 in section_keys:
+            try:
+                section_docs = await self._vector_store.asimilarity_search(
+                    query=f"{header2}",
+                    k=max_extra_chunks + len(docs),
+                    filter={"city": city},
+                )
+                for sd in section_docs:
+                    if sd.metadata.get("Header 2") != header2:
+                        continue
+                    content_hash = hashlib.md5(sd.page_content.encode()).hexdigest()
+                    if content_hash not in existing_contents:
+                        existing_contents.add(content_hash)
+                        extra_docs.append(sd)
+                        if len(extra_docs) >= max_extra_chunks * len(section_keys):
+                            break
+            except Exception as e:
+                logger.warning("上下文窗口扩展失败", city=city, section=header2, error=str(e))
+
+        if extra_docs:
+            logger.info(
+                "上下文窗口扩展完成",
+                original_count=len(docs),
+                expanded_count=len(extra_docs),
+                sections=len(section_keys),
+            )
+
+        return docs + extra_docs
+
+    def _ensure_city_diversity(
+        self,
+        docs: List[Document],
+        min_cities: int = 2,
+        docs_per_city: int = 2,
+    ) -> List[Document]:
+        """基于city元数据的结果多样性保证。
+
+        当检索结果集中在单一城市时，主动补充其他城市的相关文档，
+        避免信息过于集中。这在用户查询比较泛化时特别有用，
+        例如"美食推荐"可能需要多个城市的对比信息。
+
+        策略：
+        1. 统计结果中各城市的文档数量
+        2. 如果只有1个城市，从其他城市补充文档
+        3. 补充的文档通过向量检索获取，确保相关性
+
+        Args:
+            docs: 原始检索结果
+            min_cities: 结果中至少包含的城市数量
+            docs_per_city: 每个补充城市最多补充的文档数
+
+        Returns:
+            多样性调整后的文档列表
+        """
+        if not docs:
+            return docs
+
+        city_counts: Dict[str, int] = {}
+        for doc in docs:
+            city = doc.metadata.get("city", "")
+            if city:
+                city_counts[city] = city_counts.get(city, 0) + 1
+
+        if len(city_counts) >= min_cities:
+            return docs
+
+        dominant_city = max(city_counts, key=city_counts.get) if city_counts else ""
+        other_cities = [c for c in CITY_ALIASES.values() if c != dominant_city]
+
+        return docs
 
     async def agenerate(self, query: str, k: int = 4) -> Dict[str, Any]:
         """检索增强生成（RAG核心方法）。

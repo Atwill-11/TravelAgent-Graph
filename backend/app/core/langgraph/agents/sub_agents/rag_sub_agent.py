@@ -4,16 +4,16 @@
 当规划智能体判断需要检索旅游知识时，会生成类型为"rag"的任务，
 由execute_sub_agent_node路由到本子智能体执行。
 
-RAG子智能体使用create_agent创建，封装LLM和检索工具：
-- LLM负责推理：决定使用哪个检索工具、如何组合查询、综合分析检索结果
-- 检索工具负责从向量库中检索文档片段
+RAG子智能体使用create_agent创建，封装LLM和统一检索工具：
+- LLM负责推理：决定如何组合查询、综合分析检索结果
+- 检索工具负责执行统一增强检索流水线（查询扩展→混合检索→合并去重→后处理）
 
 调用链路：
   plan_node（生成rag类型任务）
     → execute_sub_agent_node（路由到call_rag_sub_agent）
       → rag_sub_agent（LLM + 检索工具）
-        → rag_knowledge_retrieve / rag_expanded_retrieve
-          → RAGPipeline.aretrieve / aexpanded_retrieve
+        → rag_knowledge_retrieve
+          → RAGPipeline.aretrieve_enhanced
             → 返回结果
 
 返回格式与weather_sub_agent一致：
@@ -49,7 +49,7 @@ from langchain_qwq import ChatQwen
 from langchain.agents import create_agent
 from langchain.tools import tool
 
-RAG_TOOL_NAMES = {"rag_knowledge_retrieve", "rag_expanded_retrieve"}
+RAG_TOOL_NAMES = {"rag_knowledge_retrieve"}
 
 model = ChatQwen(
     model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
@@ -123,8 +123,8 @@ def _extract_sources_from_tool_content(
 def _extract_structured_data(messages: list) -> Dict[str, Any]:
     """从agent执行结果的messages中提取所有RAG工具调用的结构化数据。
 
-    遍历messages列表，找到所有RAG工具（rag_knowledge_retrieve /
-    rag_expanded_retrieve）的ToolMessage，提取文档来源元数据并合并去重。
+    遍历messages列表，找到所有RAG工具（rag_knowledge_retrieve）
+    的ToolMessage，提取文档来源元数据并合并去重。
 
     Args:
         messages: agent执行结果中的messages列表

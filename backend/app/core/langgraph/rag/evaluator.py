@@ -75,8 +75,10 @@ class EvalQuery:
         相关性判定采用两阶段过滤：
         1. 城市过滤：若relevant_cities非空，文档的city元数据必须在其中；
            若relevant_cities为空（跨城市查询），则跳过城市过滤
-        2. 内容过滤：文档的Header 2在relevant_sections中，
-           或文档内容包含relevant_keywords中的至少一个关键词
+        2. 内容过滤（满足任一即可）：
+           a) 章节匹配：文档的Header 2在relevant_sections中
+           b) 关键词匹配：文档内容包含relevant_keywords中至少2个关键词
+              （仅1个关键词匹配过于宽松，容易将仅提及城市名的文档误判为相关）
 
         两阶段为AND关系，需同时满足。
 
@@ -97,9 +99,9 @@ class EvalQuery:
         )
 
         content = doc.page_content
+        keyword_hit_count = sum(1 for kw in self.relevant_keywords if kw in content)
         keyword_match = (
-            self.relevant_keywords
-            and any(kw in content for kw in self.relevant_keywords)
+            len(self.relevant_keywords) > 0 and keyword_hit_count >= 2
         )
 
         content_match = section_match or keyword_match
@@ -539,6 +541,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
+                    "score_threshold": 2.0,
                 },
                 "mqe_only": {
                     "use_mqe": True,
@@ -547,6 +550,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
+                    "score_threshold": 2.0,
                 },
                 "hyde_only": {
                     "use_mqe": False,
@@ -555,6 +559,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
+                    "score_threshold": 2.0,
                 },
                 "hybrid_only": {
                     "use_mqe": False,
@@ -563,6 +568,7 @@ class RAGEvaluator:
                     "use_hybrid": True,
                     "use_context_expansion": False,
                     "use_diversity": False,
+                    "score_threshold": 2.0,
                 },
                 "full": {
                     "use_mqe": True,
@@ -571,6 +577,7 @@ class RAGEvaluator:
                     "use_hybrid": True,
                     "use_context_expansion": True,
                     "use_diversity": True,
+                    "score_threshold": 2.0,
                 },
             }
 
@@ -627,7 +634,7 @@ class RAGEvaluator:
             try:
                 docs = await self.pipeline.aretrieve_enhanced(
                     query=q.query,
-                    k=max_k,
+                    k=max_k * 3,
                     **config_params,
                     config=run_config,
                 )

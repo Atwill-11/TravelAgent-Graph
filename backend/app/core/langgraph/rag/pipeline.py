@@ -700,7 +700,7 @@ class RAGPipeline:
 
         try:
             model = ChatQwen(
-                model_name=settings.DASHSCOPE_SUBAGENT_LLM_MODEL,
+                model_name=settings.DASHSCOPE_RAG_QUERY_EXPANSION_MODEL,
                 api_key=settings.DASHSCOPE_API_KEY,
                 api_base=settings.DASHSCOPE_API_BASE,
                 temperature=0.7,
@@ -772,11 +772,21 @@ class RAGPipeline:
         k: int = 4,
         score_threshold: float = 0.0,
     ) -> List[Document]:
-        """合并多组检索结果并去重，支持相似度阈值过滤。
+        """合并多组检索结果并去重，使用RRF（Reciprocal Rank Fusion）排序。
 
         去重策略：基于page_content的哈希值去重。
-        排序策略：按出现次数（多组结果中出现的次数越多越靠前），
-        相同次数按首次出现顺序。
+        排序策略：使用RRF（Reciprocal Rank Fusion）算法，
+        综合考虑文档在各查询结果中的排名位置，而非简单的出现频次。
+
+        RRF公式：score(d) = Σ 1/(k_rrf + rank_i(d))
+        其中k_rrf=60是标准常数，rank_i(d)是文档d在第i组结果中的排名。
+
+        RRF vs 纯频次排序：
+        纯频次排序的问题：原始查询的top结果在扩展查询中也会出现（语义相似），
+        频次最高永远排在最前面，扩展查询带来的独特新文档频次只有1，被截断丢弃。
+        RRF的优势：考虑排名位置，扩展查询中排名靠前的独特文档可以超过
+        原始查询中排名靠后的文档，使扩展策略的贡献得以体现。
+
         过滤策略：保留distance <= score_threshold的文档。
 
         PGVectorStore使用COSINE_DISTANCE度量，distance范围[0, 2]：
@@ -786,7 +796,8 @@ class RAGPipeline:
         - > 1.0: 基本不相关
 
         Args:
-            result_groups: 多组检索结果，每组为(Document, distance)元组列表
+            result_groups: 多组检索结果，每组为(Document, distance)元组列表，
+                           按distance升序排列（最相似的在前）
             k: 最终返回的文档数量
             score_threshold: distance阈值，超过此值的文档被过滤掉。
                              0表示不过滤（默认），典型值0.5~1.0
@@ -794,26 +805,29 @@ class RAGPipeline:
         Returns:
             去重合并后的文档列表
         """
-        doc_scores: Dict[str, Tuple[Document, int, float]] = {}
-        seen_order: Dict[str, int] = {}
-        order = 0
+        K_RRF = 60
+
+        doc_scores: Dict[str, Tuple[Document, float, float]] = {}
 
         for group in result_groups:
-            for doc, dist in group:
+            for rank, (doc, dist) in enumerate(group, start=1):
                 if score_threshold > 0 and dist > score_threshold:
                     continue
                 content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                rrf_contribution = 1.0 / (K_RRF + rank)
                 if content_hash in doc_scores:
-                    existing_doc, count, best_dist = doc_scores[content_hash]
-                    doc_scores[content_hash] = (existing_doc, count + 1, min(best_dist, dist))
+                    existing_doc, rrf_score, best_dist = doc_scores[content_hash]
+                    doc_scores[content_hash] = (
+                        existing_doc,
+                        rrf_score + rrf_contribution,
+                        min(best_dist, dist),
+                    )
                 else:
-                    doc_scores[content_hash] = (doc, 1, dist)
-                    seen_order[content_hash] = order
-                    order += 1
+                    doc_scores[content_hash] = (doc, rrf_contribution, dist)
 
         sorted_docs = sorted(
             doc_scores.values(),
-            key=lambda x: (-x[1], seen_order[hashlib.md5(x[0].page_content.encode()).hexdigest()]),
+            key=lambda x: -x[1],
         )
 
         return [doc for doc, _, _ in sorted_docs[:k]]
@@ -823,19 +837,27 @@ class RAGPipeline:
         """从查询文本中提取城市名，生成元数据过滤条件。
 
         遍历CITY_ALIASES映射表，匹配查询中出现的城市名。
-        如果匹配到，返回 {"city": "english_name"} 格式的过滤条件，
-        可直接传递给PGVectorStore的filter参数。
+        支持多城市匹配：当查询中包含多个城市名时（如"大理和丽江哪个更值得去"），
+        返回OR过滤条件，匹配任一城市即可。
 
         Args:
             query: 用户查询文本
 
         Returns:
             城市过滤条件字典，未匹配到则返回None
+            单城市：{"city": "english_name"}
+            多城市：{"city": {"in": ["city1", "city2"]}}
         """
+        matched_cities = []
         for cn_name, en_name in CITY_ALIASES.items():
             if cn_name in query:
-                return {"city": en_name}
-        return None
+                matched_cities.append(en_name)
+
+        if not matched_cities:
+            return None
+        if len(matched_cities) == 1:
+            return {"city": matched_cities[0]}
+        return {"city": {"in": matched_cities}}
 
     def _build_hybrid_search_config(self, query: str) -> HybridSearchConfig:
         """构建混合检索配置。
@@ -925,7 +947,7 @@ class RAGPipeline:
         use_hybrid: bool = True,
         use_context_expansion: bool = True,
         use_diversity: bool = True,
-        score_threshold: float = 1.0,
+        score_threshold: float = 0.8,
         config: Optional[Dict[str, Any]] = None,
     ) -> List[Document]:
         """统一增强检索：查询扩展 → 混合检索 → 合并去重 → 后处理。
@@ -967,10 +989,10 @@ class RAGPipeline:
             use_context_expansion: 是否启用上下文窗口扩展
             use_diversity: 是否启用城市多样性保证
             score_threshold: 余弦距离阈值，distance > 此值的文档被过滤。
-                             默认1.0（保留有一定相关性的文档）。
+                             默认0.8（过滤掉相关性较低的文档，适合生产环境）。
                              范围[0, 2]：0=完全相同，0.5=高度相关，
-                             1.0=中等相关，1.5+=基本不相关。
-                             设为2.0则不过滤任何文档。
+                             0.8=相关，1.0=中等相关，1.5+=基本不相关。
+                             A/B测试评估时建议设为2.0（不过滤），让评估指标自行判断相关性。
             config: 可选的LangChain RunnableConfig，用于传递回调（如Langfuse）。
                     当从A/B测试端点调用时传入Langfuse回调以追踪MQE/HyDE生成过程；
                     当从旅行规划主图调用时为None，回调由主图上下文自动传播。

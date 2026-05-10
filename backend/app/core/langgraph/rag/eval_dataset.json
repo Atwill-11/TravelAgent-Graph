@@ -83,14 +83,14 @@
     "query_id": "q29",
     "query": "三亚哪个海滩最好",
     "relevant_cities": ["sanya"],
-    "relevant_sections": ["必游景点", "住宿建议"],
-    "relevant_keywords": ["亚龙湾", "海棠湾", "三亚湾", "大东海", "海滩"]
+    "relevant_sections": ["必游景点"],
+    "relevant_keywords": ["亚龙湾", "海棠湾", "三亚湾", "大东海", "蜈支洲岛", "沙滩"]
   },
   {
     "query_id": "q48",
     "query": "大理和丽江哪个更值得去",
     "relevant_cities": ["dali", "lijiang"],
-    "relevant_sections": ["城市概述"],
-    "relevant_keywords": ["大理", "丽江", "古城", "洱海", "苍山"]
+    "relevant_sections": ["城市概述", "必游景点"],
+    "relevant_keywords": ["苍山", "洱海", "玉龙雪山", "古城", "白族"]
   }
 ]

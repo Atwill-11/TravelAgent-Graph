@@ -513,3 +513,122 @@ async def evaluate_rag_ab_test(
             status_code=500,
             detail=f"RAG A/B测试失败: {str(e)}"
         )
+
+
+class AnnotateRequest(BaseModel):
+    """LLM标注请求模型。"""
+
+    output_path: Optional[str] = Field(
+        None,
+        description="输出文件路径（可选，默认覆盖原eval_dataset.json）"
+    )
+    passage_signature_length: int = Field(
+        30,
+        description="每个passage特征文本的长度（字符数），默认30"
+    )
+    candidate_k: int = Field(
+        20,
+        description="向量检索的候选chunk数量，默认20。增大可提高召回但增加LLM成本"
+    )
+    max_concurrency: int = Field(
+        5,
+        description="最大并发数，默认5。根据API限流策略调整，通义千问建议不超过10"
+    )
+
+
+class AnnotateResponse(BaseModel):
+    """LLM标注响应模型。"""
+
+    total_queries: int = Field(description="标注的查询总数")
+    total_chunks: int = Field(description="全库文档分块总数")
+    candidate_k: int = Field(description="向量检索的候选chunk数量")
+    max_concurrency: int = Field(description="最大并发数")
+    annotations: List[Dict[str, Any]] = Field(description="每条查询的标注统计")
+    saved_to: str = Field(description="标注结果保存路径")
+
+
+@router.post(
+    "/evaluate/annotate",
+    response_model=AnnotateResponse,
+    summary="LLM预标注评估数据集",
+    description="""
+使用LLM为评估数据集预标注相关段落（relevant_passages）。
+
+**两阶段检索策略（避免上下文爆炸）：**
+1. 阶段1：向量检索 → 找到候选chunk（top-k，默认20个）
+2. 阶段2：LLM判断 → 只判断候选chunk的相关性
+
+这样可以将上下文从N个chunk降到k个chunk，大幅降低API成本。
+
+**并行优化：**
+- 使用asyncio.Semaphore控制并发，避免API限流
+- 默认并发数为5，可根据API限制调整
+- 并行处理大幅提升标注速度
+
+**预标注的优势：**
+- 比关键词/章节匹配更精准
+- 能处理需要语义理解的复杂相关性判断
+- 标注结果持久化，评估时无需重复调用LLM
+
+**参数说明：**
+- `candidate_k`: 候选chunk数量，默认20。增大可提高召回但增加LLM成本
+- `passage_signature_length`: 特征文本长度，默认30字符
+- `max_concurrency`: 最大并发数，默认5。通义千问建议不超过10
+
+**注意：**
+- 标注过程需要调用LLM API，会产生费用
+- 标注后需重建知识库（如果文档有变更）
+- 建议在文档稳定后执行一次标注即可
+    """,
+)
+async def annotate_eval_dataset(
+    request: Request,
+    body: AnnotateRequest,
+) -> AnnotateResponse:
+    """LLM预标注评估数据集。"""
+    try:
+        rm = get_resource_manager()
+        rag_pipeline = rm.rag_pipeline
+
+        if rag_pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="RAG流水线未初始化，请检查应用启动日志"
+            )
+
+        from app.core.langgraph.rag.evaluator import RAGEvaluator
+
+        evaluator = RAGEvaluator(rag_pipeline)
+
+        logger.info(
+            "开始LLM标注评估数据集",
+            candidate_k=body.candidate_k,
+            max_concurrency=body.max_concurrency,
+        )
+
+        result = await evaluator.annotate_dataset_with_llm(
+            output_path=body.output_path,
+            passage_signature_length=body.passage_signature_length,
+            candidate_k=body.candidate_k,
+            max_concurrency=body.max_concurrency,
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        logger.info(
+            "LLM标注完成",
+            total_queries=result["total_queries"],
+            total_chunks=result["total_chunks"],
+        )
+
+        return AnnotateResponse(**result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("LLM标注失败", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"LLM标注失败: {str(e)}"
+        )

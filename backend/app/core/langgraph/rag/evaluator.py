@@ -45,7 +45,7 @@ from app.core.logging import logger
 from .pipeline import RAGPipeline
 
 
-EVAL_DATASET_PATH = Path(__file__).parent / "eval_dataset.json"
+EVAL_DATASET_PATH = Path(__file__).parent / "eval_dataset_fixed.json"
 
 
 class EvalQuery:
@@ -54,12 +54,18 @@ class EvalQuery:
     封装eval_dataset.json中单条查询的标注信息，
     并提供相关性判定方法。
 
+    支持两种相关性判定模式：
+    1. 预标注模式（推荐）：使用relevant_passages字段，由LLM预先标注
+       每个passage是相关chunk中的一段特征性文本，匹配时检查文档是否包含该文本
+    2. 规则模式（兼容）：使用relevant_sections + relevant_keywords字段
+
     Attributes:
         query_id: 查询唯一标识
         query: 查询文本
         relevant_cities: 相关城市列表（为空表示不限城市）
-        relevant_sections: 相关章节列表
-        relevant_keywords: 相关关键词列表
+        relevant_sections: 相关章节列表（规则模式）
+        relevant_keywords: 相关关键词列表（规则模式）
+        relevant_passages: 相关段落特征文本列表（预标注模式，优先级高于规则模式）
     """
 
     def __init__(self, data: Dict[str, Any]):
@@ -68,19 +74,21 @@ class EvalQuery:
         self.relevant_cities: List[str] = data.get("relevant_cities", [])
         self.relevant_sections: List[str] = data.get("relevant_sections", [])
         self.relevant_keywords: List[str] = data.get("relevant_keywords", [])
+        self.relevant_passages: List[str] = data.get("relevant_passages", [])
 
     def is_relevant(self, doc: Document) -> bool:
         """判断文档是否与当前查询相关。
 
-        相关性判定采用两阶段过滤：
-        1. 城市过滤：若relevant_cities非空，文档的city元数据必须在其中；
-           若relevant_cities为空（跨城市查询），则跳过城市过滤
-        2. 内容过滤（满足任一即可）：
-           a) 章节匹配：文档的Header 2在relevant_sections中
-           b) 关键词匹配：文档内容包含relevant_keywords中至少2个关键词
-              （仅1个关键词匹配过于宽松，容易将仅提及城市名的文档误判为相关）
+        优先使用预标注模式（relevant_passages），若为空则回退到规则模式。
 
-        两阶段为AND关系，需同时满足。
+        预标注模式（三级匹配策略）：
+          1. 精确匹配：passage完整出现在文档内容中
+          2. 模糊匹配：passage的前20个字符出现在文档内容中
+             （处理chunk边界截断导致passage被分割的情况）
+          3. 关键词+城市匹配：作为兜底策略
+
+        规则模式：
+          城市匹配 AND (章节匹配 OR 关键词匹配≥2个)
 
         Args:
             doc: 待判定的文档
@@ -92,6 +100,18 @@ class EvalQuery:
             not self.relevant_cities
             or doc.metadata.get("city", "") in self.relevant_cities
         )
+
+        if not city_match:
+            return False
+
+        if self.relevant_passages:
+            for passage in self.relevant_passages:
+                if passage in doc.page_content:
+                    return True
+                prefix_len = min(20, len(passage))
+                if prefix_len >= 10 and passage[:prefix_len] in doc.page_content:
+                    return True
+            return False
 
         section_match = (
             self.relevant_sections
@@ -106,7 +126,7 @@ class EvalQuery:
 
         content_match = section_match or keyword_match
 
-        return city_match and content_match
+        return content_match
 
 
 class EvalResult:
@@ -497,6 +517,8 @@ class RAGEvaluator:
         k_values: Optional[List[int]] = None,
         configs: Optional[Dict[str, Dict[str, Any]]] = None,
         langfuse_client: Optional[Any] = None,
+        max_concurrent_configs: int = 2,
+        config_delay: float = 1.0,
     ) -> Dict[str, Any]:
         """多配置A/B测试：对比不同检索策略组合的效果。
 
@@ -522,6 +544,10 @@ class RAGEvaluator:
                      参数名对应aretrieve_enhanced的关键字参数
             langfuse_client: 可选的Langfuse客户端实例，传入后会在Langfuse中
                              创建结构化trace追踪A/B测试过程，可观测MQE/HyDE生成结果
+            max_concurrent_configs: 最大并发配置数，默认2。控制同时执行的配置数量，
+                                   避免过多并发导致API限流
+            config_delay: 配置之间的延迟时间（秒），默认1.0。在配置启动之间添加延迟，
+                         平滑请求分布
 
         Returns:
             A/B测试报告，包含：
@@ -541,7 +567,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
-                    "score_threshold": 2.0,
+                    "score_threshold": 0.8,
                 },
                 "mqe_only": {
                     "use_mqe": True,
@@ -550,7 +576,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
-                    "score_threshold": 2.0,
+                    "score_threshold": 0.8,
                 },
                 "hyde_only": {
                     "use_mqe": False,
@@ -559,7 +585,7 @@ class RAGEvaluator:
                     "use_hybrid": False,
                     "use_context_expansion": False,
                     "use_diversity": False,
-                    "score_threshold": 2.0,
+                    "score_threshold": 0.8,
                 },
                 "hybrid_only": {
                     "use_mqe": False,
@@ -568,7 +594,7 @@ class RAGEvaluator:
                     "use_hybrid": True,
                     "use_context_expansion": False,
                     "use_diversity": False,
-                    "score_threshold": 2.0,
+                    "score_threshold": 0.8,
                 },
                 "full": {
                     "use_mqe": True,
@@ -577,7 +603,7 @@ class RAGEvaluator:
                     "use_hybrid": True,
                     "use_context_expansion": True,
                     "use_diversity": True,
-                    "score_threshold": 2.0,
+                    "score_threshold": 0.8,
                 },
             }
 
@@ -775,10 +801,46 @@ class RAGEvaluator:
 
             return config_name, config_results, config_report, config_total_time, config_span
 
+        config_semaphore = asyncio.Semaphore(max_concurrent_configs)
+        
+        async def _eval_config_with_semaphore(
+            config_name: str,
+            config_params: Dict[str, Any],
+            config_idx: int,
+        ):
+            """带信号量控制的配置评估。
+
+            Args:
+                config_name: 配置名称
+                config_params: 配置参数
+                config_idx: 配置索引（用于添加延迟）
+
+            Returns:
+                配置评估结果
+            """
+            async with config_semaphore:
+                if config_idx > 0 and config_delay > 0:
+                    await asyncio.sleep(config_delay)
+                    logger.debug(
+                        "配置启动延迟",
+                        config=config_name,
+                        delay_seconds=config_delay,
+                    )
+                
+                return await _eval_single_config(config_name, config_params)
+
         config_coros = [
-            _eval_single_config(name, params)
-            for name, params in configs.items()
+            _eval_config_with_semaphore(name, params, idx)
+            for idx, (name, params) in enumerate(configs.items())
         ]
+        
+        logger.info(
+            "开始A/B测试",
+            total_configs=len(configs),
+            max_concurrent=max_concurrent_configs,
+            config_delay=config_delay,
+        )
+        
         config_gather_results = await asyncio.gather(*config_coros, return_exceptions=True)
 
         all_config_results: Dict[str, List[EvalResult]] = {}
@@ -1090,4 +1152,238 @@ class RAGEvaluator:
                 "improved_ratio": round(recall_improved / n, 4) if n > 0 else 0.0,
             },
             "per_query": per_query_comparison,
+        }
+
+    async def annotate_dataset_with_llm(
+        self,
+        output_path: Optional[str] = None,
+        passage_signature_length: int = 30,
+        candidate_k: int = 20,
+        max_concurrency: int = 5,
+    ) -> Dict[str, Any]:
+        """使用LLM为评估数据集预标注相关段落。
+
+        采用两阶段检索策略，避免上下文长度爆炸：
+        1. 阶段1：向量检索 → 找到候选chunk（top-k）
+        2. 阶段2：LLM判断 → 只判断候选chunk的相关性
+
+        这样可以将上下文从N个chunk降到k个chunk（默认20），
+        大幅降低API调用成本和上下文长度风险。
+
+        并行优化：
+        - 使用asyncio.Semaphore控制并发数量，避免API限流
+        - 默认并发数为5，可根据API限制调整
+
+        预标注的优势：
+        1. 比关键词/章节匹配更精准，能区分"提及关键词但不相关"的文档
+        2. 能处理需要语义理解的复杂相关性判断
+        3. 标注结果持久化，评估时无需重复调用LLM
+
+        生成的relevant_passages字段会写入eval_dataset.json，
+        is_relevant方法会优先使用该字段进行判定。
+
+        Args:
+            output_path: 输出文件路径，默认覆盖原eval_dataset.json
+            passage_signature_length: 每个passage特征文本的长度（字符数），
+                                      默认30，足够唯一标识一个chunk
+            candidate_k: 向量检索的候选chunk数量，默认20。
+                         增大可提高召回但增加LLM成本，减小则相反。
+            max_concurrency: 最大并发数，默认5。根据API限流策略调整，
+                             通义千问建议不超过10。
+
+        Returns:
+            标注结果统计，包含每条查询q的相关chunk数量等
+        """
+        from langchain_qwq import ChatQwen
+        from langchain_core.prompts import ChatPromptTemplate
+        from app.core.config import settings
+
+        queries = self.load_eval_dataset()
+        all_chunks = self._load_all_chunks()
+
+        if not all_chunks:
+            logger.error("全库文档分块为空，无法进行LLM标注")
+            return {"error": "全库文档分块为空"}
+
+        annotation_prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "你是一个RAG检索质量评估专家。你的任务是判断哪些文档片段与给定查询相关。\n\n"
+                "判断标准：\n"
+                "- 文档片段包含能直接回答查询的信息\n"
+                "- 文档片段包含查询所需的关键事实或建议\n"
+                "- 不要选择仅提及查询中的城市名但内容不相关的片段\n"
+                "- 对于跨城市对比查询，相关城市的信息都应被选中\n\n"
+                "请返回相关文档片段的编号列表，格式为JSON数组，如 [0, 2, 5]。\n"
+                "编号是文档片段列表中的索引位置。只返回JSON数组，不要返回其他内容。"
+            )),
+            ("human", (
+                "查询：{query}\n\n"
+                "文档片段列表：\n{chunks_text}\n\n"
+                "请返回与查询相关的文档片段编号列表（JSON数组）："
+            )),
+        ])
+
+        model = ChatQwen(
+            model_name=settings.DASHSCOPE_ANNOTATOR_MODEL,
+            api_key=settings.DASHSCOPE_API_KEY,
+            api_base=settings.DASHSCOPE_API_BASE,
+            temperature=0.0,
+            max_tokens=200,
+            timeout=90,
+            max_retries=2,
+        )
+
+        chain = annotation_prompt | model
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _annotate_single_query(q: EvalQuery) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+            """标注单条查询（支持并发控制）。"""
+            async with semaphore:
+                try:
+                    results = await self.pipeline.aretrieve_with_scores(
+                        query=q.query, k=candidate_k
+                    )
+                    candidate_chunks = [(doc, score) for doc, score in results]
+                except Exception as e:
+                    logger.error("向量检索失败", query_id=q.query_id, error=str(e))
+                    candidate_chunks = []
+
+                if not candidate_chunks:
+                    entry = {
+                        "query_id": q.query_id,
+                        "query": q.query,
+                        "relevant_cities": q.relevant_cities,
+                        "relevant_sections": q.relevant_sections,
+                        "relevant_keywords": q.relevant_keywords,
+                        "relevant_passages": [],
+                    }
+                    stat = {
+                        "query_id": q.query_id,
+                        "query": q.query,
+                        "candidate_count": 0,
+                        "relevant_chunk_count": 0,
+                        "passage_count": 0,
+                    }
+                    return entry, stat
+
+                chunk_summaries = []
+                for i, (chunk, score) in enumerate(candidate_chunks):
+                    city = chunk.metadata.get("city", "unknown")
+                    header2 = chunk.metadata.get("Header 2", "")
+                    content_preview = chunk.page_content[:60].replace("\n", " ")
+                    chunk_summaries.append(
+                        f"[{i}] 城市={city} | 章节={header2} | 相似度={score:.3f} | 内容={content_preview}..."
+                    )
+
+                chunks_text = "\n".join(chunk_summaries)
+
+                try:
+                    result = await chain.ainvoke({
+                        "query": q.query,
+                        "chunks_text": chunks_text,
+                    })
+
+                    import re
+                    content = result.content.strip()
+                    match = re.search(r'\[[\d\s,]+\]', content)
+                    if match:
+                        relevant_indices = json.loads(match.group())
+                    else:
+                        relevant_indices = []
+
+                    relevant_indices = [
+                        idx for idx in relevant_indices
+                        if 0 <= idx < len(candidate_chunks)
+                    ]
+
+                except Exception as e:
+                    logger.error("LLM标注失败", query_id=q.query_id, error=str(e))
+                    relevant_indices = []
+
+                passages = []
+                for idx in relevant_indices:
+                    chunk, _ = candidate_chunks[idx]
+                    content = chunk.page_content
+                    sig = content[:passage_signature_length].strip()
+                    if sig:
+                        passages.append(sig)
+
+                entry = {
+                    "query_id": q.query_id,
+                    "query": q.query,
+                    "relevant_cities": q.relevant_cities,
+                    "relevant_sections": q.relevant_sections,
+                    "relevant_keywords": q.relevant_keywords,
+                    "relevant_passages": passages,
+                }
+
+                stat = {
+                    "query_id": q.query_id,
+                    "query": q.query,
+                    "candidate_count": len(candidate_chunks),
+                    "relevant_chunk_count": len(relevant_indices),
+                    "passage_count": len(passages),
+                }
+
+                logger.info(
+                    "LLM标注完成",
+                    query_id=q.query_id,
+                    candidates=len(candidate_chunks),
+                    relevant_chunks=len(relevant_indices),
+                    passages=len(passages),
+                )
+
+                return entry, stat
+
+        logger.info(
+            "开始并行LLM标注",
+            total_queries=len(queries),
+            max_concurrency=max_concurrency,
+        )
+
+        tasks = [_annotate_single_query(q) for q in queries]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        updated_data = []
+        annotation_stats = []
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error("标注任务异常", query_id=queries[i].query_id, error=str(result))
+                entry = {
+                    "query_id": queries[i].query_id,
+                    "query": queries[i].query,
+                    "relevant_cities": queries[i].relevant_cities,
+                    "relevant_sections": queries[i].relevant_sections,
+                    "relevant_keywords": queries[i].relevant_keywords,
+                    "relevant_passages": [],
+                }
+                stat = {
+                    "query_id": queries[i].query_id,
+                    "query": queries[i].query,
+                    "candidate_count": 0,
+                    "relevant_chunk_count": 0,
+                    "passage_count": 0,
+                    "error": str(result),
+                }
+                updated_data.append(entry)
+                annotation_stats.append(stat)
+            else:
+                entry, stat = result
+                updated_data.append(entry)
+                annotation_stats.append(stat)
+
+        save_path = Path(output_path) if output_path else self.eval_dataset_path
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(updated_data, f, ensure_ascii=False, indent=2)
+
+        logger.info("LLM标注结果已保存", path=str(save_path))
+
+        return {
+            "total_queries": len(queries),
+            "total_chunks": len(all_chunks),
+            "candidate_k": candidate_k,
+            "max_concurrency": max_concurrency,
+            "annotations": annotation_stats,
+            "saved_to": str(save_path),
         }

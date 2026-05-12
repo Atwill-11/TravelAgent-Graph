@@ -218,6 +218,8 @@ class Settings:
         self.RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))
         self.RAG_TOP_K = int(os.getenv("RAG_TOP_K", "4"))
         self.RAG_FORCE_REBUILD = os.getenv("RAG_FORCE_REBUILD", "false").lower() in ("true", "1", "t", "yes")
+        # 数据标注模型
+        self.DASHSCOPE_ANNOTATOR_MODEL = os.getenv("DASHSCOPE_ANNOTATOR_MODEL") or self.DASHSCOPE_DEFAULT_LLM_MODEL
 
         # # 评估配置
         # self.EVALUATION_LLM = os.getenv("EVALUATION_LLM", "gpt-5")

@@ -277,36 +277,40 @@ TravelAgent-Graph/
 │   │   ├── api/v1/            # API 路由层
 │   │   │   ├── api.py         # API 路由聚合
 │   │   │   ├── auth.py        # 认证授权（JWT）
+│   │   │   ├── rag.py         # RAG 知识库管理端点
 │   │   │   └── travel.py      # 旅游规划端点（含 SSE 流式响应）
 │   │   ├── core/              # 核心模块
 │   │   │   ├── langgraph/     # LangGraph Agent 核心
 │   │   │   │   ├── agents/    # Agent 定义
 │   │   │   │   │   ├── sub_agents/         # 景点/酒店/天气/RAG/分配子 Agent
-│   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent（含流式运行函数）
+│   │   │   │   │   └── travel_plan_agent/  # 主规划 Agent
 │   │   │   │   ├── rag/       # RAG 知识库检索模块
-│   │   │   │   ├── pipeline.py         # RAG Pipeline 核心实现
-│   │   │   │   ├── rag_tool.py         # RAG 工具封装
-│   │   │   │   ├── evaluator.py        # RAG 检索质量评估器
-│   │   │   │   ├── eval_dataset.json    # 评估数据集（25条标注查询）
-│   │   │   │   └── knowledge_base/     # 旅游攻略知识库（Markdown）
+│   │   │   │   │   ├── pipeline.py         # RAG Pipeline 核心实现
+│   │   │   │   │   ├── rag_tool.py         # RAG 工具封装
+│   │   │   │   │   ├── rate_limiter.py     # LLM 调用速率限制
+│   │   │   │   │   └── knowledge_base/     # 旅游攻略知识库（12个城市 Markdown）
 │   │   │   │   ├── tools/     # 工具定义
-│   │   │   │   │   ├── local/  # 本地工具（和风天气）
-│   │   │   │   │   └── mcp/    # MCP 工具（高德地图）
+│   │   │   │   │   ├── local/  # 本地工具（weather_tool.py）
+│   │   │   │   │   └── mcp/    # MCP 工具（amap_server.py 高德地图）
 │   │   │   │   └── __init__.py
-│   │   │   ├── prompts/       # Prompt 模板
+│   │   │   ├── prompts/       # Prompt 模板（attraction/hotel/rag/travel/weather.py）
 │   │   │   ├── config.py      # 配置管理
-│   │   │   ├── limiter.py     # 速率限制
+│   │   │   ├── limiter.py     # API 速率限制
 │   │   │   ├── logging.py     # 结构化日志
 │   │   │   └── middleware.py  # 中间件
 │   │   ├── models/            # 数据库模型（SQLModel）
+│   │   │   ├── user.py        # 用户模型
+│   │   │   ├── session.py     # 会话模型
+│   │   │   └── rag_document.py # RAG 文档模型
 │   │   ├── schemas/           # Pydantic 数据模型
-│   │   │   ├── agent/         # Agent 相关模型
-│   │   │   ├── common/        # 通用模型
-│   │   │   ├── travel/        # 旅游规划模型
-│   │   │   ├── weather/       # 天气模型
+│   │   │   ├── agent/         # Agent 相关模型（context.py/state.py/travel_state.py）
+│   │   │   ├── common/        # 通用模型（location.py）
+│   │   │   ├── travel/        # 旅游规划模型（plan.py/request.py/selection.py/components.py）
+│   │   │   ├── weather/       # 天气模型（amap.py/qweather.py）
 │   │   │   └── auth.py        # 认证模型
 │   │   ├── services/          # 服务层
-│   │   │   └── database.py    # 数据库服务
+│   │   │   ├── database.py    # 数据库服务
+│   │   │   └── resource_manager.py # 资源生命周期管理器
 │   │   ├── utils/             # 工具函数
 │   │   │   ├── auth.py        # 认证工具
 │   │   │   └── sanitization.py # 数据清洗
@@ -334,6 +338,7 @@ TravelAgent-Graph/
 │   │   │   ├── SessionSidebar.vue      # 会话侧边栏
 │   │   │   └── ThinkingProcess.vue     # SSE 思考过程展示组件
 │   │   ├── composables/       # 组合式函数
+│   │   │   ├── useAuth.ts              # 认证逻辑
 │   │   │   ├── useSession.ts           # 会话管理逻辑
 │   │   │   ├── useTripForm.ts          # 表单数据和验证
 │   │   │   └── useTripSubmit.ts        # SSE 流式提交逻辑
@@ -342,8 +347,8 @@ TravelAgent-Graph/
 │   │   │   ├── Login.vue      # 登录页
 │   │   │   └── Result.vue     # 结果页
 │   │   ├── router/            # 路由配置
-│   │   ├── services/          # API 服务（含 SSE 流式 API）
-│   │   ├── types/             # TypeScript 类型定义（含 SSE 事件类型）
+│   │   ├── services/          # API 服务（api.ts 含 SSE 流式 API）
+│   │   ├── types/             # TypeScript 类型定义（index.ts 含 SSE 事件类型）
 │   │   ├── App.vue            # 根组件
 │   │   └── main.ts            # 入口文件
 │   ├── public/                # 静态资源
@@ -497,7 +502,6 @@ curl http://localhost:3001/health
 - `POST /api/v1/rag/scan-and-add` - 扫描并增量添加新文档到知识库
 - `POST /api/v1/rag/rebuild` - 重建整个知识库（清空现有数据）
 - `GET /api/v1/rag/documents` - 获取已加载文档列表
-- `POST /api/v1/rag/evaluate` - 评估 RAG 检索质量（Recall@K/Precision@K/MRR）
 
 ### 健康检查
 

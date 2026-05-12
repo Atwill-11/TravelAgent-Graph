@@ -103,13 +103,13 @@ async def rag_knowledge_retrieve(
         query: 查询文本，描述需要检索的旅游信息。
                例如："成都美食推荐"、"西安必游景点"、"丽江旅行注意事项"
         k: 返回的文档数量，默认4
-        use_mqe: 是否启用多查询扩展，默认True
-        use_hyde: 是否启用假设文档嵌入，默认True
+        use_mqe: 是否启用多查询扩展，默认False
+        use_hyde: 是否启用假设文档嵌入，默认False
         mqe_count: MQE生成的扩展查询数量，默认3
         use_filter: 是否启用城市元数据预过滤，默认True
         use_hybrid: 是否启用混合检索（向量+关键词），默认True
-        use_context_expansion: 是否启用上下文窗口扩展，默认True
-        use_diversity: 是否启用城市多样性保证，默认True
+        use_context_expansion: 是否启用上下文窗口扩展，默认False
+        use_diversity: 是否启用城市多样性保证，默认False
         score_threshold: 余弦距离阈值，distance超过此值的文档被过滤，默认1.0。
                          范围[0, 2]，值越小过滤越严格。设为2.0则不过滤。
 
